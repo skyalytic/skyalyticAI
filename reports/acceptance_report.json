@@ -1,0 +1,276 @@
+{
+  "generated_at": "2026-05-28T13:51:36.522820+00:00",
+  "summary": {
+    "total_episodes": 10,
+    "total_steps": 61,
+    "final_avg_reward": -1.22,
+    "brain_stage": "undergraduate"
+  },
+  "school_stage": "undergraduate",
+  "school_name": "本科",
+  "quality_gate": {
+    "rolling_speech_accuracy": 0.0,
+    "rolling_subject_accuracy": {
+      "日语": 0.0,
+      "数学": 0.0,
+      "自动化": 0.0,
+      "文学": 0.0,
+      "机械": 0.0,
+      "临床医学": 0.0,
+      "生物": 0.0,
+      "教育学": 0.0,
+      "土木": 0.0
+    },
+    "forgetting_threshold": 0.05
+  },
+  "corpus_stats": {
+    "root": "D:\\skyalyticAI\\data\\corpus",
+    "files": 0,
+    "vocab": 511,
+    "stages": {
+      "sensorimotor": 106,
+      "kindergarten": 528,
+      "primary": 528,
+      "middle": 951,
+      "high": 1056,
+      "undergraduate": 2640,
+      "master": 2640,
+      "phd": 2640
+    },
+    "subjects": {
+      "sensorimotor": [
+        "通识"
+      ],
+      "kindergarten": [
+        "语言",
+        "数学启蒙",
+        "英语启蒙",
+        "艺术",
+        "健康"
+      ],
+      "primary": [
+        "语文",
+        "数学",
+        "英语",
+        "科学",
+        "道德与法治"
+      ],
+      "middle": [
+        "语文",
+        "数学",
+        "英语",
+        "物理",
+        "化学",
+        "生物",
+        "历史",
+        "地理",
+        "道德与法治"
+      ],
+      "high": [
+        "语文",
+        "数学",
+        "英语",
+        "物理",
+        "化学",
+        "生物",
+        "历史",
+        "地理",
+        "道德与法治",
+        "信息技术"
+      ],
+      "undergraduate": [
+        "哲学",
+        "经济学",
+        "法学",
+        "教育学",
+        "文学",
+        "历史学",
+        "理学",
+        "工学",
+        "农学",
+        "医学",
+        "管理学",
+        "艺术学",
+        "计算机",
+        "数学",
+        "物理",
+        "化学",
+        "生物",
+        "中文",
+        "英语",
+        "日语",
+        "自动化",
+        "电子信息",
+        "机械",
+        "土木",
+        "临床医学"
+      ],
+      "master": [
+        "哲学",
+        "经济学",
+        "法学",
+        "教育学",
+        "文学",
+        "历史学",
+        "理学",
+        "工学",
+        "农学",
+        "医学",
+        "管理学",
+        "艺术学",
+        "计算机",
+        "数学",
+        "物理",
+        "化学",
+        "生物",
+        "中文",
+        "英语",
+        "日语",
+        "自动化",
+        "电子信息",
+        "机械",
+        "土木",
+        "临床医学"
+      ],
+      "phd": [
+        "哲学",
+        "经济学",
+        "法学",
+        "教育学",
+        "文学",
+        "历史学",
+        "理学",
+        "工学",
+        "农学",
+        "医学",
+        "管理学",
+        "艺术学",
+        "计算机",
+        "数学",
+        "物理",
+        "化学",
+        "生物",
+        "中文",
+        "英语",
+        "日语",
+        "自动化",
+        "电子信息",
+        "机械",
+        "土木",
+        "临床医学"
+      ]
+    },
+    "npc_curriculum": true
+  },
+  "retention": [
+    {
+      "stage": "kindergarten",
+      "accuracy": 0.0,
+      "historical_best": 0.0,
+      "forgetting": 0.0
+    },
+    {
+      "stage": "primary",
+      "accuracy": 0.0,
+      "historical_best": 0.0,
+      "forgetting": 0.0
+    },
+    {
+      "stage": "middle",
+      "accuracy": 0.0,
+      "historical_best": 0.0,
+      "forgetting": 0.0
+    },
+    {
+      "stage": "high",
+      "accuracy": 0.0,
+      "historical_best": 0.0,
+      "forgetting": 0.0
+    },
+    {
+      "stage": "undergraduate",
+      "accuracy": 0.0,
+      "historical_best": 0.0,
+      "forgetting": 0.0
+    }
+  ],
+  "retention_history": [
+    {
+      "step": 61,
+      "stage": "undergraduate",
+      "results": [
+        {
+          "stage": "kindergarten",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "primary",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "middle",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "high",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "undergraduate",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        }
+      ]
+    },
+    {
+      "step": 61,
+      "stage": "undergraduate",
+      "results": [
+        {
+          "stage": "kindergarten",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "primary",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "middle",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "high",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        },
+        {
+          "stage": "undergraduate",
+          "accuracy": 0.0,
+          "historical_best": 0.0,
+          "forgetting": 0.0
+        }
+      ]
+    }
+  ],
+  "industrial_readiness": {
+    "data_ready": true,
+    "training_ready": false,
+    "retention_pass": true
+  }
+}

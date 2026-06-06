@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SkyalyticAI"
+version = "0.2.1"
+description = "Neural Isomorphic Evolutionary Architecture - A brain-inspired AI framework"
+readme = "README.md"
+license = {text = "CC-BY-NC-SA-4.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "NIEA Team"}
+]
+keywords = ["neuroscience", "spiking-neural-network", "predictive-coding", "active-inference", "hyperdimensional-computing", "brain-inspired"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.22.0",
+    "scipy>=1.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+torch = [
+    "torch>=2.0.0",
+]
+viz = [
+    "matplotlib>=3.5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["skyalyticAI*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

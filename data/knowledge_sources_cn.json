@@ -1,0 +1,53 @@
+{
+  "note": "仅列开放来源示例。可继续追加公开课程、政府公开文本、开源百科等。",
+  "sources": [
+    {
+      "stage_dir": "02_primary",
+      "subject": "语文",
+      "url": "https://zh.wikisource.org/wiki/%E4%B8%89%E5%AD%97%E7%BB%8F",
+      "filename": "三字经_wikisource.txt",
+      "is_html": true,
+      "max_chars": 60000
+    },
+    {
+      "stage_dir": "02_primary",
+      "subject": "语文",
+      "url": "https://zh.wikisource.org/wiki/%E5%8D%83%E5%AD%97%E6%96%87",
+      "filename": "千字文_wikisource.txt",
+      "is_html": true,
+      "max_chars": 60000
+    },
+    {
+      "stage_dir": "03_middle",
+      "subject": "历史",
+      "url": "https://zh.wikipedia.org/wiki/%E4%B8%AD%E5%9B%BD%E5%8E%86%E5%8F%B2",
+      "filename": "中国历史_wikipedia.txt",
+      "is_html": true,
+      "max_chars": 120000
+    },
+    {
+      "stage_dir": "04_high",
+      "subject": "物理",
+      "url": "https://zh.wikipedia.org/wiki/%E7%89%A9%E7%90%86%E5%AD%B8",
+      "filename": "物理学_wikipedia.txt",
+      "is_html": true,
+      "max_chars": 120000
+    },
+    {
+      "stage_dir": "05_undergraduate",
+      "subject": "计算机",
+      "url": "https://zh.wikipedia.org/wiki/%E8%AE%A1%E7%AE%97%E6%9C%BA%E7%A7%91%E5%AD%A6",
+      "filename": "计算机科学_wikipedia.txt",
+      "is_html": true,
+      "max_chars": 160000
+    },
+    {
+      "stage_dir": "05_undergraduate",
+      "subject": "英语",
+      "url": "https://www.gutenberg.org/cache/epub/1342/pg1342.txt",
+      "filename": "pride_and_prejudice.txt",
+      "is_html": false,
+      "max_chars": 200000
+    }
+  ]
+}
