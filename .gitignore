@@ -25,6 +25,7 @@ checkpoints/
 *.npz
 *.pt
 *.pth
+*.pkl
 
 # Logs
 *.log
@@ -44,3 +45,6 @@ Thumbs.db
 
 # Data
 data/corpus/
+
+# Reports
+reports/
