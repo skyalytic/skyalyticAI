@@ -41,19 +41,19 @@ class ExamSuite(Environment):
         self._char = CharPredictionExam(
             corpus, stage, observation_dim,
             n_questions=spec.exam_questions,
-            pass_accuracy=spec.exam_pass_accuracy or 0.5,
+            pass_accuracy=spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5,
             seed=seed,
         )
         self._reading = ReadingComprehensionExam(
             corpus, stage, observation_dim,
             n_questions=max(8, spec.exam_questions // 2),
-            pass_accuracy=max(0.45, (spec.exam_pass_accuracy or 0.5) - 0.05),
+            pass_accuracy=max(0.45, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.05),
             seed=seed + 1,
         )
         self._reasoning = MultiStepReasoningExam(
             corpus, stage, observation_dim,
             n_questions=max(6, spec.exam_questions // 3),
-            pass_accuracy=max(0.42, (spec.exam_pass_accuracy or 0.5) - 0.07),
+            pass_accuracy=max(0.42, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.07),
             seed=seed + 2,
         )
         self._active = self._char
@@ -61,11 +61,28 @@ class ExamSuite(Environment):
         self._scores: Dict[str, float] = {}
 
     def set_stage(self, stage: str) -> None:
-        """切换学段并同步到所有题型。"""
+        """切换学段并重建所有子考试。"""
         self.stage = stage
-        self._char.stage = stage
-        self._reading.stage = stage
-        self._reasoning.stage = stage
+        spec = get_quality_spec(stage)
+        seed = int(self.rng.integers(0, 2**31))
+        self._char = CharPredictionExam(
+            self.corpus, stage, self.observation_dim,
+            n_questions=spec.exam_questions,
+            pass_accuracy=spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5,
+            seed=seed,
+        )
+        self._reading = ReadingComprehensionExam(
+            self.corpus, stage, self.observation_dim,
+            n_questions=max(8, spec.exam_questions // 2),
+            pass_accuracy=max(0.45, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.05),
+            seed=seed + 1,
+        )
+        self._reasoning = MultiStepReasoningExam(
+            self.corpus, stage, self.observation_dim,
+            n_questions=max(6, spec.exam_questions // 3),
+            pass_accuracy=max(0.42, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.07),
+            seed=seed + 2,
+        )
 
     def _pick_exam(self) -> None:
         if self.stage in NON_SCHOOL_EXAM_STAGES:
@@ -110,7 +127,7 @@ class ExamSuite(Environment):
         if self.stage in NON_SCHOOL_EXAM_STAGES:
             return False
         spec = get_quality_spec(self.stage)
-        return self.composite_accuracy() >= (spec.exam_pass_accuracy or 0.5)
+        return self.composite_accuracy() >= (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5)
 
     def get_observation_dim(self) -> int:
         return self.observation_dim

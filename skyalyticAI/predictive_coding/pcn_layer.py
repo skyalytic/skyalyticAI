@@ -148,8 +148,8 @@ class PCNLayer:
         2. The prediction error propagated from below: W^T @ error_from_below * sigma_below
 
         The gradient of free energy w.r.t. x is:
-            dF/dx = -sigma_above * (prediction_from_above - x)
-                    + sigma_below * W^T @ error_from_below
+            dF/dx = sigma_above * (x - prediction_from_above)
+                    - sigma * J^T @ error_from_below
 
         Parameters
         ----------
@@ -207,7 +207,7 @@ class PCNLayer:
         Update weights to minimize prediction error.
 
         The gradient of free energy w.r.t. W is:
-            dF/dW = sigma_below * error_below * x^T
+            dF/dW = -sigma * error_below * x^T
 
         For linear prediction, this gives the outer product update.
 
@@ -326,6 +326,12 @@ class PCNLayer:
             self.W = W_state.copy()
         self.b = state["b"].copy()
         self.x = state["x"].copy()
+        if "sigma" in state:
+            self.sigma = float(state["sigma"])
+        if "dim_below" in state:
+            self.dim_below = int(state["dim_below"])
+        if "dim" in state:
+            self.dim = int(state["dim"])
 
     def __repr__(self) -> str:
         sparse_info = f", sparse={self.sparse}" if self.sparse else ""

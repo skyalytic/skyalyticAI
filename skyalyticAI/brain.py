@@ -323,7 +323,7 @@ class NIEABrain:
         self.development_stages = development_stages
         self.spike_encoding_steps = spike_encoding_steps
         self.surprise_threshold = surprise_threshold
-        if surprise_threshold == 0.5:
+        if surprise_threshold < 0:
             self.surprise_threshold = max(0.01, 0.5 / np.sqrt(hidden_dim))
         self.consolidation_interval = consolidation_interval
         self.consolidation_batch_size = consolidation_batch_size
@@ -651,7 +651,16 @@ class NIEABrain:
             features["audio"] = self.audio_encoder.encode(audio)
 
         if features and self.multimodal_fusion is not None:
-            sensory_input = self.multimodal_fusion.fuse(features)
+            fused = self.multimodal_fusion.fuse(features)
+            if raw_observation is not None:
+                raw = np.asarray(raw_observation, dtype=np.float64)
+                # 融合多模态特征与原始观测，各占一半维度
+                half = self.input_dim // 2
+                sensory_input = np.zeros(self.input_dim, dtype=np.float64)
+                sensory_input[:half] = fused[:half]
+                sensory_input[half:] = raw[:self.input_dim - half]
+            else:
+                sensory_input = fused
         elif raw_observation is not None:
             sensory_input = np.asarray(raw_observation, dtype=np.float64)
         elif features:
@@ -800,7 +809,7 @@ class NIEABrain:
         self.global_workspace.submit_bid(2, float(curiosity), np.full(self.global_workspace.workspace_dim, curiosity))
         self.global_workspace.submit_bid(3, float(confidence), np.full(self.global_workspace.workspace_dim, confidence))
         self.global_workspace.submit_bid(4, float(len(memory_context)) / max(1, self.hd_memory.dim) if memory_context else 0.0, np.zeros(self.global_workspace.workspace_dim))
-        self.global_workspace.submit_bid(5, float(external_reward) if external_reward is not None else 0.0, np.full(self.global_workspace.workspace_dim, external_reward if external_reward is not None else 0.0))
+        self.global_workspace.submit_bid(5, float(external_reward), np.full(self.global_workspace.workspace_dim, external_reward))
         self.global_workspace.submit_bid(6, float(np.mean(np.abs(hidden_state))), hidden_state)
 
         gw_result = self.global_workspace.compete()
@@ -1002,6 +1011,7 @@ class NIEABrain:
             snn_layer.W = W
             if b is not None:
                 snn_layer.bias = b
+        self.structural_evolution._step_counter = 0
 
     def _select_action_from_imagination(
         self,
@@ -1283,8 +1293,11 @@ class NIEABrain:
             self.state_to_obs_b = state["state_to_obs_b"].copy()
         self.age = state["age"]
         self.stage = state["stage"]
+        if "brain_scale" in state:
+            self.brain_scale = state["brain_scale"]
         if "experience_buffer" in state:
-            buffer_maxlen = 100_000_000 if self.brain_scale else 10000
+            _is_large_scale = isinstance(self.brain_scale, str) and self.brain_scale in ("large", "xlarge", "human")
+            buffer_maxlen = 100_000_000 if _is_large_scale else 10000
             self.experience_buffer = deque(state["experience_buffer"], maxlen=buffer_maxlen)
         if "consolidation_counter" in state:
             self._consolidation_counter = state["consolidation_counter"]
@@ -1309,8 +1322,6 @@ class NIEABrain:
             self.ocr_head.load_state_dict(state["ocr_head"])
         if "sparse" in state:
             self.sparse = state["sparse"]
-        if "brain_scale" in state:
-            self.brain_scale = state["brain_scale"]
         if "_input_running_mean" in state and state["_input_running_mean"] is not None:
             self._input_running_mean = state["_input_running_mean"].copy()
         if "_input_running_M2" in state and state["_input_running_M2"] is not None:

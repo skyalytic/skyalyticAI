@@ -56,7 +56,7 @@ class AcceptanceReportBuilder:
         total = 0
         correct = 0
         for _ in range(max(10, spec.steps_per_episode)):
-            hidden, _, _ = trainer.brain.perceive(obs)
+            hidden, _, _ = trainer._perceive_observation(obs)
             action = trainer.brain.speak(hidden) if trainer.brain.language_head else 0
             obs, _, done, info = eval_env.step(action)
             if "correct" in info:

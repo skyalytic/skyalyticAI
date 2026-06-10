@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -34,7 +34,7 @@ TrainKey = Tuple[str, str]
 class CorpusManager:
     def __init__(
         self,
-        corpus_root: Optional[Path] = None,
+        corpus_root: Optional[Union[str, Path]] = None,
         vocab_size: int = 512,
         exam_holdout_ratio: float = 0.12,
         seed: int = 42,
@@ -210,10 +210,12 @@ class CorpusManager:
 
     def get_exam_lines(self, stage: str, n: int = 20) -> List[str]:
         if self._npc_curriculum and self._teacher is not None:
-            # 考试文本也来自老师（更贴近“上课教出来的”）
+            # 考试文本也来自老师（更贴近"上课教出来的"）
+            if n <= 0:
+                return []
             out = []
             subjects = self.list_subjects(stage) or ["通识"]
-            for _ in range(max(1, n)):
+            for _ in range(n):
                 subj = str(self.rng.choice(subjects))
                 out.append(self._teacher.sample_teaching_line(stage, subj))
             return out
@@ -222,7 +224,7 @@ class CorpusManager:
             pool = self._train_by_stage.get(stage, _builtin_sensorimotor_lines())
         n = min(n, len(pool))
         if n <= 0:
-            return _builtin_sensorimotor_lines()[:3]
+            return []
         idx = self.rng.choice(len(pool), size=n, replace=False)
         return [pool[int(i)] for i in idx]
 

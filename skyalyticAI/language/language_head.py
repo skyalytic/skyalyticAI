@@ -87,7 +87,7 @@ class LanguageHead:
         p = self.probs(h)
         target = np.zeros(self.vocab_size, dtype=np.float64)
         target[target_index] = 1.0
-        scale = self.learning_rate * abs(float(reward))
+        scale = self.learning_rate * float(reward)
         err = target - p
         self.W += scale * np.outer(err, h)
         self.b += scale * err

@@ -19,6 +19,7 @@ import numpy as np
 from skyalyticAI.data.corpus_manager import CorpusManager
 from skyalyticAI.data.education_config import STAGE_ORDER, core_subjects, get_quality_spec, next_stage
 from skyalyticAI.env.environment import Environment
+from skyalyticAI.env.curriculum_world import Activity
 from skyalyticAI.language.text_encoder import TextEncoder
 from skyalyticAI.npc.teacher_npc import TeacherNPC
 
@@ -69,7 +70,7 @@ class SocietySimWorld(Environment):
         self.image_size = image_size
         self.audio_len = audio_len
 
-        self.corpus = CorpusManager(corpus_root=corpus_root)
+        self.corpus = CorpusManager(corpus_root=corpus_root, seed=seed)
         self.vocab_size = max(self.corpus.vocab_len(), 32)
         self.teacher = TeacherNPC(seed=(seed or 0) + 123)
         self.teacher.student_name = student_name
@@ -87,6 +88,9 @@ class SocietySimWorld(Environment):
         # 长期关系图（-1~1）：与各角色关系亲密度
         self.relationships: Dict[str, float] = {}
         self._init_relationships()
+
+        # 兼容 HumanGrowthTrainer 的 _activity 属性
+        self._activity: Optional[Any] = None
 
     def _init_relationships(self) -> None:
         for p in self.teacher.personas:
@@ -193,7 +197,7 @@ class SocietySimWorld(Environment):
 
     def _obs_dict(self) -> Dict[str, Any]:
         assert self._state is not None
-        raw = self.text_encoder.encode(self._ctx_indices[-64:])
+        raw = self.text_encoder.encode(self._ctx_indices[-32:])
         return {
             "visual": self._make_visual(self._state.slot, self._state.event),
             "audio": self._make_audio(self._state.prompt_text),
@@ -204,6 +208,7 @@ class SocietySimWorld(Environment):
     def reset(self) -> Dict[str, Any]:
         self._episodes_since_exam += 1
         self._spec = get_quality_spec(self.school_stage)
+        self._activity = Activity.READING  # 社会课堂始终为阅读模式，启用语言头
         slot = self._pick_slot()
         subject = self._pick_subject(slot)
         self._current_subject = subject

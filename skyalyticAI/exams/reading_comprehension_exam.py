@@ -141,6 +141,8 @@ class ReadingComprehensionExam(Environment):
             pad = np.zeros(self.observation_dim, dtype=np.float64)
             pad[: obs.shape[0]] = obs
             obs = pad
+        elif obs.shape[0] > self.observation_dim:
+            obs = obs[:self.observation_dim]
         return obs
 
     def get_observation_dim(self) -> int:

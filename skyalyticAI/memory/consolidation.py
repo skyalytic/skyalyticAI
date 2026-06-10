@@ -635,6 +635,7 @@ class ComplementaryMemorySystem:
             "hippocampal_strengths": list(self.hippocampal._strengths),
             "hippocampal_ages": list(self.hippocampal._ages),
             "hippocampal_consolidated": list(self.hippocampal._consolidated),
+            "hippocampal_separation_matrix": self.hippocampal._separation_matrix.copy(),
             "cortical_keys": [k.copy() for k in self.cortical._keys],
             "cortical_values": [v.copy() for v in self.cortical._values],
             "cortical_counts": list(self.cortical._counts),
@@ -649,11 +650,13 @@ class ComplementaryMemorySystem:
             self.hippocampal._strengths = list(state["hippocampal_strengths"])
             self.hippocampal._ages = list(state["hippocampal_ages"])
             self.hippocampal._consolidated = list(state.get("hippocampal_consolidated", [False] * len(self.hippocampal._keys)))
-            self.hippocampal._size = len(self.hippocampal._keys)
+            self.hippocampal._size = min(len(self.hippocampal._keys), self.hippocampal.capacity)
+            if "hippocampal_separation_matrix" in state:
+                self.hippocampal._separation_matrix = state["hippocampal_separation_matrix"].copy()
         if "cortical_keys" in state:
             self.cortical._keys = [k.copy() for k in state["cortical_keys"]]
             self.cortical._values = [v.copy() for v in state["cortical_values"]]
             self.cortical._counts = list(state["cortical_counts"])
-            self.cortical._size = len(self.cortical._keys)
+            self.cortical._size = min(len(self.cortical._keys), self.cortical.capacity)
         if "consolidation_count" in state:
             self._consolidation_count = state["consolidation_count"]

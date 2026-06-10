@@ -1,4 +1,4 @@
-﻿"""
+"""
 NIEA Trainer - Complete Training Loop
 
 Implements the full training pipeline for the NIEABrain,
@@ -273,10 +273,12 @@ class NIEATrainer:
         }
 
         path = os.path.join(
-            self.checkpoint_dir, "checkpoint_ep{}.npz".format(episode + 1)
+            self.checkpoint_dir, "checkpoint_ep{}.pkl".format(episode + 1)
         )
 
-        np.savez(path, checkpoint=np.array(checkpoint, dtype=object))
+        import pickle
+        with open(path, "wb") as f:
+            pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     def _flatten_dict(
         self, d: Dict[str, Any], out: Dict[str, Any], prefix: str
@@ -300,9 +302,10 @@ class NIEATrainer:
                 out[full_key] = np.array(value)
 
     def _load_checkpoint(self, path: str) -> Dict[str, Any]:
-        """Load a training checkpoint from an npz file."""
-        data = np.load(path, allow_pickle=True)
-        checkpoint = data["checkpoint"].item()
+        """Load a training checkpoint from a pkl file."""
+        import pickle
+        with open(path, "rb") as f:
+            checkpoint = pickle.load(f)
 
         episode = checkpoint["episode"]
         total_steps = checkpoint["total_steps"]
@@ -419,7 +422,7 @@ class NIEATrainer:
             steps = 0
 
             for step in range(self.max_steps_per_episode):
-                hidden, _, _ = self.brain.perceive(obs)
+                hidden, _, _ = self._perceive_observation(obs)
                 thought = self.brain.think(hidden)
                 action = thought["action"]
                 obs, reward, done, _ = self.env.step(action)

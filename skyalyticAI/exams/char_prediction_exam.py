@@ -28,7 +28,7 @@ class CharPredictionExam(Environment):
         self.corpus = corpus
         self.stage = stage
         self.observation_dim = observation_dim
-        self.n_questions = max(1, n_questions)
+        self.n_questions = n_questions if n_questions > 0 else 0
         self.pass_accuracy = pass_accuracy
         self.rng = np.random.default_rng(seed)
         self.vocab_size = corpus.vocab_len()
@@ -115,6 +115,8 @@ class CharPredictionExam(Environment):
             pad = np.zeros(self.observation_dim, dtype=np.float64)
             pad[: obs.shape[0]] = obs
             obs = pad
+        elif obs.shape[0] > self.observation_dim:
+            obs = obs[:self.observation_dim]
         return obs
 
     def get_observation_dim(self) -> int:
