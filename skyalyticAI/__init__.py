@@ -20,7 +20,7 @@ Seven Core Functional Modules:
 7. Metacognition & Structural Self-Evolution - Self-awareness and architecture adaptation
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 from skyalyticAI.neurons import LIFNeuron, ALIFNeuron, SNNLayer
 from skyalyticAI.plasticity import STDPSynapse, STDPLayer

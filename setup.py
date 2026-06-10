@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="SkyalyticAI",
-    version="0.2.2",
+    version="0.3.0",
     packages=find_packages(include=["skyalyticAI*"]),
     python_requires=">=3.9",
     install_requires=[
