@@ -84,10 +84,12 @@ class SocialClassroomWorld(HumanGrowthWorld):
 
     def _step_reading(self, action: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """覆写：阅读步骤加入 NPC 信息。"""
+        # 保存当前 persona（super()._step_reading 可能触发 _start_reading 更新 persona）
+        old_persona = self._current_persona
         obs, reward, done, info = super()._step_reading(action)
-        if self._current_persona:
-            info["actor_role"] = self._current_persona.get("role", "")
-            info["actor_style"] = self._current_persona.get("style", "")
+        if old_persona:
+            info["actor_role"] = old_persona.get("role", "")
+            info["actor_style"] = old_persona.get("style", "")
             info["student_name"] = self.student_name
         return obs, reward, done, info
 

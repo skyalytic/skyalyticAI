@@ -266,8 +266,9 @@ class HumanGrowthWorld(Environment):
         line_done = self._text_pos >= len(self._text_indices) - 1
         done = line_done or self._step_in_episode >= self._spec.steps_per_episode
 
-        # 在行切换前计算当前准确率
+        # 在行切换前保存当前步骤的上下文（奖励/正确性属于旧行）
         accuracy = self._text_correct / max(self._text_total, 1)
+        current_subject = self._current_subject
 
         if line_done and not done:
             # 继续读下一行（通过 _start_reading 以支持子类覆写）
@@ -277,7 +278,7 @@ class HumanGrowthWorld(Environment):
             "mode": "text",
             "activity": "reading",
             "school_stage": self.school_stage,
-            "subject": self._current_subject,
+            "subject": current_subject,
             "correct": ok,
             "target_char": self.corpus.index_to_char(target),
             "spoken_char": self.corpus.index_to_char(action),

@@ -773,6 +773,8 @@ class NIEABrain:
             and memory context.
         """
         meta_features = np.array([external_reward, self.pcn.get_prediction_uncertainty(), float(self.age) / 10000.0])
+        # 拷贝 hidden_state 避免原地修改污染调用者
+        hidden_state = hidden_state.copy()
         meta_input = np.concatenate([hidden_state, meta_features])
         if meta_input.shape[0] < self.metacognition.input_dim:
             padded = np.zeros(self.metacognition.input_dim, dtype=np.float64)
@@ -1008,6 +1010,10 @@ class NIEABrain:
             W, b, info = self.structural_evolution.prune_weights(
                 snn_layer.W, snn_layer.bias
             )
+            # 如果原来是稀疏的，将剪枝后的稠密矩阵转回稀疏格式
+            if snn_layer._sparse_conn is not None:
+                from scipy import sparse as sp
+                W = sp.csr_matrix(W)
             snn_layer.W = W
             if b is not None:
                 snn_layer.bias = b

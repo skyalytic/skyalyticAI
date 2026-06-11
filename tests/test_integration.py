@@ -102,7 +102,7 @@ class TestImportChain:
 
     def test_import_top_level(self):
         import skyalyticAI
-        assert skyalyticAI.__version__ == "0.3.1"
+        assert skyalyticAI.__version__ == "0.3.2"
 
     def test_import_brain(self):
         from skyalyticAI.brain import NIEABrain, BrainScalePresets
