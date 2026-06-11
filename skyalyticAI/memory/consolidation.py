@@ -660,3 +660,18 @@ class ComplementaryMemorySystem:
             self.cortical._size = min(len(self.cortical._keys), self.cortical.capacity)
         if "consolidation_count" in state:
             self._consolidation_count = state["consolidation_count"]
+
+    def reset(self) -> None:
+        """Clear all memories, returning to initial empty state."""
+        self.hippocampal._keys.clear()
+        self.hippocampal._memories.clear()
+        self.hippocampal._strengths.clear()
+        self.hippocampal._ages.clear()
+        self.hippocampal._consolidated.clear()
+        self.hippocampal._size = 0
+        self.hippocampal._ptr = 0
+        self.cortical._keys.clear()
+        self.cortical._values.clear()
+        self.cortical._counts.clear()
+        self.cortical._size = 0
+        self._consolidation_count = 0

@@ -769,7 +769,7 @@ class ActiveInferenceAgent:
                 Sigma_posterior_t = prior_Sigma_t
 
         self.belief_mu = belief_t.detach().cpu().numpy()
-        if n_belief_steps > 0:
+        if self.n_belief_steps > 0:
             self.belief_Sigma = Sigma_posterior_t.detach().cpu().numpy()
 
         return self.belief_mu.copy()

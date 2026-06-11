@@ -594,15 +594,14 @@ class NIEABrain:
 
         inference_result = self.pcn.infer(hidden_state)
 
-        if self._saved_pcn_state is None:
-            self._saved_pcn_state = {
-                "prediction_errors": [
-                    e.copy() if e is not None else None
-                    for e in self.pcn.prediction_errors
-                ],
-                "input_state": self.pcn.input_state.copy(),
-                "layer_states": [layer.x.copy() for layer in self.pcn.layers],
-            }
+        self._saved_pcn_state = {
+            "prediction_errors": [
+                e.copy() if e is not None else None
+                for e in self.pcn.prediction_errors
+            ],
+            "input_state": self.pcn.input_state.copy(),
+            "layer_states": [layer.x.copy() for layer in self.pcn.layers],
+        }
 
         if self.pcn.layer_sizes[0] == self.hidden_dim:
             prediction = self.pcn.predict_next()
@@ -1224,6 +1223,7 @@ class NIEABrain:
         self.pcn.reset()
         self.active_inference.reset()
         self.hd_memory.reset()
+        self.complementary_memory.reset()
         self.world_model.reset()
         self.metacognition.reset()
         self.global_workspace.reset()
@@ -1237,6 +1237,10 @@ class NIEABrain:
         self._input_running_mean = np.zeros(self.input_dim)
         self._input_running_M2 = np.zeros(self.input_dim)
         self._input_running_count = 0
+        self._perception_projection_W = None
+        self._perception_projection_input_dim = None
+        self.state_to_obs_W = np.random.randn(self.input_dim, self.hidden_dim) * np.sqrt(2.0 / (self.hidden_dim + self.input_dim))
+        self.state_to_obs_b = np.zeros(self.input_dim, dtype=np.float64)
         self.stats = {
             "prediction_errors": [],
             "curiosity_levels": [],
