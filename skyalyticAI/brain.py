@@ -657,8 +657,8 @@ class NIEABrain:
                 # 融合多模态特征与原始观测，各占一半维度
                 half = self.input_dim // 2
                 sensory_input = np.zeros(self.input_dim, dtype=np.float64)
-                sensory_input[:half] = fused[:half]
-                sensory_input[half:] = raw[:self.input_dim - half]
+                sensory_input[:min(half, fused.shape[0])] = fused[:min(half, fused.shape[0])]
+                sensory_input[half:half + min(self.input_dim - half, raw.shape[0])] = raw[:min(self.input_dim - half, raw.shape[0])]
             else:
                 sensory_input = fused
         elif raw_observation is not None:
@@ -806,7 +806,7 @@ class NIEABrain:
             action = preferred_action
 
         self.global_workspace.submit_bid(0, float(np.mean(np.abs(hidden_state))), hidden_state)
-        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.global_workspace.workspace_dim)
+        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.pcn.layer_sizes[-1])
         self.global_workspace.submit_bid(1, float(np.mean(np.abs(pcn_err))), pcn_err[:self.global_workspace.workspace_dim] if pcn_err.shape[0] >= self.global_workspace.workspace_dim else np.pad(pcn_err, (0, max(0, self.global_workspace.workspace_dim - pcn_err.shape[0]))))
         self.global_workspace.submit_bid(2, float(curiosity), np.full(self.global_workspace.workspace_dim, curiosity))
         self.global_workspace.submit_bid(3, float(confidence), np.full(self.global_workspace.workspace_dim, confidence))
@@ -825,6 +825,10 @@ class NIEABrain:
                 broadcast_signal = 0.1 * broadcast / broadcast_norm
                 if broadcast_signal.shape[0] == hidden_state.shape[0]:
                     hidden_state += broadcast_signal
+                    # 同步更新内部状态，使广播信号影响后续 perceive/learn
+                    self._last_broadcast = broadcast_signal.copy()
+        else:
+            self._last_broadcast = None
 
         return {
             "action": action,
@@ -901,7 +905,7 @@ class NIEABrain:
             pcn_result = self.pcn.learn()
 
         action_vec = np.zeros(self.action_dim, dtype=np.float64)
-        action_vec[action] = 1.0
+        action_vec[action % self.action_dim] = 1.0
         obs = self.state_to_obs_W @ hidden_state + self.state_to_obs_b
         next_obs = self.state_to_obs_W @ next_hidden_state + self.state_to_obs_b
 
@@ -957,6 +961,11 @@ class NIEABrain:
         self.stats["knowledge_growth"].append(len(self.hd_memory.item_memory))
         self.stats["rewards"].append(reward)
         self.stats["confidences"].append(confidence)
+        # Trim stats to prevent unbounded memory growth
+        _MAX_STATS = 10000
+        for key in self.stats:
+            if len(self.stats[key]) > _MAX_STATS:
+                self.stats[key] = self.stats[key][-_MAX_STATS // 2:]
 
         return {
             "stdp_update": stdp_update,
@@ -1019,7 +1028,7 @@ class NIEABrain:
                 snn_layer.bias = b
             # 同步稀疏连接矩阵
             if snn_layer._sparse_conn is not None:
-                snn_layer._sparse_conn.W = W
+                snn_layer._sparse_conn.W = W.copy()
         self.structural_evolution._step_counter = 0
 
     def _select_action_from_imagination(
@@ -1156,7 +1165,7 @@ class NIEABrain:
                 continue
 
             action_vec = np.zeros(self.action_dim, dtype=np.float64)
-            action_vec[action] = 1.0
+            action_vec[action % self.action_dim] = 1.0
 
             obs = self.state_to_obs_W @ state + self.state_to_obs_b
             next_obs = self.state_to_obs_W @ next_state + self.state_to_obs_b
@@ -1215,12 +1224,19 @@ class NIEABrain:
         self.pcn.reset()
         self.active_inference.reset()
         self.hd_memory.reset()
+        self.world_model.reset()
         self.metacognition.reset()
+        self.global_workspace.reset()
         self.experience_buffer.clear()
         self._consolidation_counter = 0
         self.age = 0
         self.stage = DevelopmentStage.SENSORIMOTOR
+        self.school_stage = "sensorimotor"
         self._saved_pcn_state = None
+        self._last_broadcast = None
+        self._input_running_mean = np.zeros(self.input_dim)
+        self._input_running_M2 = np.zeros(self.input_dim)
+        self._input_running_count = 0
         self.stats = {
             "prediction_errors": [],
             "curiosity_levels": [],

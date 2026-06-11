@@ -77,6 +77,7 @@ class AudioEncoder:
         scale = np.sqrt(2.0 / (n_mels + output_dim))
         self.projection_W = np.random.randn(output_dim, n_mels) * scale
         self.projection_b = np.zeros(output_dim, dtype=np.float64)
+        self._last_input = np.zeros(n_mels, dtype=np.float64)
 
     def _create_mel_filterbank(
         self, sample_rate: int, fft_size: int, n_mels: int

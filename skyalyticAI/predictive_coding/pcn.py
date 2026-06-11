@@ -183,6 +183,7 @@ class PredictiveCodingNetwork:
 
         self._inference_converged = False
 
+        step = -1
         for step in range(n_steps):
             max_change = 0.0
 
@@ -235,7 +236,7 @@ class PredictiveCodingNetwork:
 
         return {
             "converged": self._inference_converged,
-            "n_steps": step + 1 if n_steps > 0 else 0,
+            "n_steps": step + 1,
             "total_error": total_error,
             "errors": [e.copy() if e is not None else None for e in self.prediction_errors],
         }
@@ -498,6 +499,9 @@ class PredictiveCodingNetwork:
             "layers": [l.state_dict() for l in self.layers],
             "input_state": self.input_state.copy(),
             "layer_sizes": self.layer_sizes,
+            "prediction_errors": [
+                e.copy() if e is not None else None for e in self.prediction_errors
+            ],
         }
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
@@ -505,6 +509,10 @@ class PredictiveCodingNetwork:
         for layer, l_state in zip(self.layers, state["layers"]):
             layer.load_state_dict(l_state)
         self.input_state = state["input_state"].copy()
+        if "prediction_errors" in state:
+            self.prediction_errors = [
+                e.copy() if e is not None else None for e in state["prediction_errors"]
+            ]
 
     def __repr__(self) -> str:
         return (

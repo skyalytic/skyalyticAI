@@ -89,6 +89,7 @@ class VisualEncoder:
         scale = np.sqrt(2.0 / (self.flat_dim + output_dim))
         self.projection_W = np.random.randn(output_dim, self.flat_dim) * scale
         self.projection_b = np.zeros(output_dim, dtype=np.float64)
+        self._last_flat = np.zeros(self.flat_dim, dtype=np.float64)
 
     def _init_gabor_filters(
         self, n_filters: int, n_channels: int, size: int

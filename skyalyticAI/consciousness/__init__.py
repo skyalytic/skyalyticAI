@@ -155,6 +155,8 @@ class GlobalWorkspace:
             self.winner_index = None
             self.is_ignited = False
             self.ignition_history.append(False)
+            if len(self.ignition_history) > 200:
+                self.ignition_history = self.ignition_history[-100:]
             return {
                 "winner": None,
                 "is_ignited": False,
@@ -177,6 +179,8 @@ class GlobalWorkspace:
             self.is_ignited = False
 
         self.ignition_history.append(self.is_ignited)
+        if len(self.ignition_history) > 200:
+            self.ignition_history = self.ignition_history[-100:]
 
         winner_output = self.module_outputs[winner_idx]
         if winner_output is not None:

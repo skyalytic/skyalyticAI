@@ -129,6 +129,7 @@ class MultimodalFusion:
                 feat = np.asarray(features[name], dtype=np.float64)
                 reliability = 1.0 / (1.0 + np.var(feat) + 1e-10)
                 self.attention_W[i] += self.learning_rate * reliability * (1.0 - prediction_error)
+        self.attention_W = np.clip(self.attention_W, -5.0, 5.0)
 
     def state_dict(self) -> Dict[str, Any]:
         """Return fusion state for serialization."""

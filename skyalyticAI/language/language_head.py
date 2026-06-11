@@ -65,7 +65,8 @@ class LanguageHead:
         z = self.logits(hidden) / self.temperature
         z -= np.max(z)
         e = np.exp(z)
-        p = e / (np.sum(e) + 1e-12)
+        p = e / np.sum(e)
+        p = p / p.sum()  # ensure strict normalization
         self._last_hidden = self._align_hidden(hidden)
         return p
 
@@ -87,7 +88,7 @@ class LanguageHead:
         p = self.probs(h)
         target = np.zeros(self.vocab_size, dtype=np.float64)
         target[target_index] = 1.0
-        scale = self.learning_rate * float(reward)
+        scale = self.learning_rate * abs(float(reward))
         err = target - p
         self.W += scale * np.outer(err, h)
         self.b += scale * err

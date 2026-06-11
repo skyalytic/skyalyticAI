@@ -373,7 +373,8 @@ class ActiveInferenceAgent:
         elif observation.shape[0] == self.obs_dim:
             obs_state = observation
         else:
-            obs_state = observation[:self.state_dim]
+            obs_state = np.zeros(self.obs_dim, dtype=np.float64)
+            obs_state[:min(observation.shape[0], self.obs_dim)] = observation[:self.obs_dim]
 
         for _ in range(self.n_belief_steps):
             pred_obs = self.observation_net.forward(self.belief_mu)
@@ -446,7 +447,7 @@ class ActiveInferenceAgent:
             Predicted next state covariance, shape (state_dim, state_dim).
         """
         action_vec = np.zeros(self.n_actions, dtype=np.float64)
-        action_vec[action] = 1.0
+        action_vec[action % self.n_actions] = 1.0
         sa = np.concatenate([state, action_vec])
 
         output = self.transition_net.forward(sa)
@@ -706,7 +707,8 @@ class ActiveInferenceAgent:
         elif observation.shape[0] == self.obs_dim:
             obs_state = observation
         else:
-            obs_state = observation[:self.state_dim]
+            obs_state = np.zeros(self.obs_dim, dtype=np.float64)
+            obs_state[:min(observation.shape[0], self.obs_dim)] = observation[:self.obs_dim]
 
         self._sync_torch_weights()
 
@@ -767,7 +769,8 @@ class ActiveInferenceAgent:
                 Sigma_posterior_t = prior_Sigma_t
 
         self.belief_mu = belief_t.detach().cpu().numpy()
-        self.belief_Sigma = Sigma_posterior_t.detach().cpu().numpy()
+        if n_belief_steps > 0:
+            self.belief_Sigma = Sigma_posterior_t.detach().cpu().numpy()
 
         return self.belief_mu.copy()
 
@@ -1222,7 +1225,7 @@ class ActiveInferenceAgent:
                 next_state = padded
 
         action_vec = np.zeros(self.n_actions, dtype=np.float64)
-        action_vec[action] = 1.0
+        action_vec[action % self.n_actions] = 1.0
         sa = np.concatenate([prev_state, action_vec])
 
         output = self.transition_net.forward(sa)

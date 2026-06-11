@@ -100,6 +100,7 @@ class MetacognitiveModule:
         self.b2 = np.zeros(3, dtype=np.float64)
 
         self.memory: deque = deque(maxlen=memory_size)
+        self._memory_maxlen = memory_size
 
         self._smoothed_confidence: float = initial_confidence
         self._smoothed_lr_factor: float = 1.0
@@ -288,6 +289,12 @@ class MetacognitiveModule:
         self.calibration_history.append(calibration_error)
         self.confidence_history.append(predicted_confidence)
         self.actual_error_history.append(1.0 - actual_outcome)
+        # Trim histories to prevent unbounded memory growth
+        _MAX_HISTORY = 1000
+        if len(self.calibration_history) > _MAX_HISTORY:
+            self.calibration_history = self.calibration_history[-_MAX_HISTORY:]
+            self.confidence_history = self.confidence_history[-_MAX_HISTORY:]
+            self.actual_error_history = self.actual_error_history[-_MAX_HISTORY:]
 
         if len(self.memory) >= 10:
             self._meta_learning_step()
@@ -440,6 +447,10 @@ class MetacognitiveModule:
             "calibration_score": self.calibration_score,
             "smoothed_confidence": self._smoothed_confidence,
             "smoothed_lr_factor": self._smoothed_lr_factor,
+            "memory": list(self.memory),
+            "confidence_history": list(self.confidence_history),
+            "actual_error_history": list(self.actual_error_history),
+            "calibration_history": list(self.calibration_history),
         }
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
@@ -451,6 +462,14 @@ class MetacognitiveModule:
         self.calibration_score = state["calibration_score"]
         self._smoothed_confidence = state["smoothed_confidence"]
         self._smoothed_lr_factor = state["smoothed_lr_factor"]
+        if "memory" in state:
+            self.memory = deque(state["memory"], maxlen=self._memory_maxlen)
+        if "confidence_history" in state:
+            self.confidence_history = list(state["confidence_history"])
+        if "actual_error_history" in state:
+            self.actual_error_history = list(state["actual_error_history"])
+        if "calibration_history" in state:
+            self.calibration_history = list(state["calibration_history"])
 
     def __repr__(self) -> str:
         return (

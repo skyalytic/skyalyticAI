@@ -681,6 +681,8 @@ class WorldModel:
             "kl": kl_loss,
             "reward": reward_loss,
         })
+        if len(self.loss_history) > 10000:
+            self.loss_history = self.loss_history[-5000:]
 
         return {
             "total": total_loss,
@@ -772,6 +774,8 @@ class WorldModel:
         }
 
         self.loss_history.append(result)
+        if len(self.loss_history) > 10000:
+            self.loss_history = self.loss_history[-5000:]
         return result
 
     def _train_step_batch_gpu(
@@ -932,6 +936,7 @@ class WorldModel:
             "dynamics_net": self.dynamics_net.get_params(),
             "decoder_net": self.decoder_net.get_params(),
             "reward_net": self.reward_net.get_params(),
+            "loss_history": list(self.loss_history),
         }
         return state
 
@@ -945,6 +950,8 @@ class WorldModel:
         self.dynamics_net.set_params(state["dynamics_net"])
         self.decoder_net.set_params(state["decoder_net"])
         self.reward_net.set_params(state["reward_net"])
+        if "loss_history" in state:
+            self.loss_history = list(state["loss_history"])
 
         # Sync numpy -> torch so GPU models pick up the new weights
         if self._use_gpu:

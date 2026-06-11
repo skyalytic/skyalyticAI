@@ -107,6 +107,7 @@ class GridWorldEnv(Environment):
         dr, dc = deltas[action]
         new_pos = self._agent_pos + np.array([dr, dc])
 
+        old_pos = self._agent_pos.copy()
         # 边界检查
         if (0 <= new_pos[0] < self.height
                 and 0 <= new_pos[1] < self.width
@@ -125,7 +126,7 @@ class GridWorldEnv(Environment):
             reward = -0.5
         else:
             # 距离变近给小正奖励，变远给小负奖励
-            old_dist = np.linalg.norm(self._goal_pos - (self._agent_pos - np.array([dr, dc])))
+            old_dist = np.linalg.norm(self._goal_pos - old_pos)
             new_dist = np.linalg.norm(self._goal_pos - self._agent_pos)
             reward = 0.1 if new_dist < old_dist else -0.05
 

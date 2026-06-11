@@ -250,6 +250,8 @@ class SocietySimWorld(Environment):
         self._state.pos += 1
         self._steps_in_stage += 1
         self._ctx_indices.append(action)
+        if len(self._ctx_indices) > 1000:
+            self._ctx_indices = self._ctx_indices[-500:]
 
         # 关系更新：答对提升“当前角色体验”，答错轻微下降
         persona = self.teacher.pick_persona(self.school_stage, self._state.subject)
