@@ -177,6 +177,12 @@ class StructuralEvolution:
             Pruning statistics.
         """
         W = weight_matrix.copy()
+
+        # 处理稀疏矩阵：转为稠密进行剪枝
+        is_sparse = hasattr(W, 'toarray')
+        if is_sparse:
+            W = W.toarray()
+
         abs_W = np.abs(W)
         total_connections = W.size
 

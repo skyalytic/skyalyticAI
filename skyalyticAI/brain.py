@@ -822,7 +822,7 @@ class NIEABrain:
             if broadcast_norm > 1e-10:
                 broadcast_signal = 0.1 * broadcast / broadcast_norm
                 if broadcast_signal.shape[0] == hidden_state.shape[0]:
-                    hidden_state = hidden_state + broadcast_signal
+                    hidden_state += broadcast_signal
 
         return {
             "action": action,
@@ -1011,6 +1011,9 @@ class NIEABrain:
             snn_layer.W = W
             if b is not None:
                 snn_layer.bias = b
+            # 同步稀疏连接矩阵
+            if snn_layer._sparse_conn is not None:
+                snn_layer._sparse_conn.W = W
         self.structural_evolution._step_counter = 0
 
     def _select_action_from_imagination(

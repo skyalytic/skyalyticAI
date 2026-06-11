@@ -160,9 +160,10 @@ class CorpusManager:
             if len(ordered) >= self.vocab_size - 1:
                 break
         self.char2idx = {ch: i for i, ch in enumerate(ordered)}
+        # 确保 "?" 有映射（用于未知字符回退），如果不在词表中则追加到末尾
+        if "?" not in self.char2idx and ordered:
+            self.char2idx["?"] = len(ordered)
         self.idx2char = {i: ch for ch, i in self.char2idx.items()}
-        if ordered:
-            self.char2idx.setdefault("?", 0)
 
     def vocab_len(self) -> int:
         return max(len(self.char2idx), 32)
