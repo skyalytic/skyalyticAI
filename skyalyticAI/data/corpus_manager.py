@@ -169,7 +169,7 @@ class CorpusManager:
         return max(len(self.char2idx), 32)
 
     def char_to_index(self, ch: str) -> int:
-        return self.char2idx.get(ch, 0)
+        return self.char2idx.get(ch, self.char2idx.get("?", 0))
 
     def index_to_char(self, idx: int) -> str:
         return self.idx2char.get(idx, "?")

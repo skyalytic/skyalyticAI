@@ -1344,6 +1344,8 @@ class ActiveInferenceAgent:
             "qualities": qualities.copy(),
             "action_probs": action_probs.copy(),
         })
+        if len(self.history) > 10000:
+            self.history = self.history[-5000:]
 
         self.step_count += 1
         return action

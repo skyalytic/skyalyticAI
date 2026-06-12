@@ -330,6 +330,7 @@ class StructuralEvolution:
             if activity_correlation.shape[0] > j:
                 correlations = activity_correlation[j]
                 best_partner = int(np.argmax(np.abs(correlations)))
+                best_partner = min(best_partner, in_dim - 1)
                 if best_partner != j:
                     W[i, best_partner] += W[i, j] * 0.5
                     W[i, j] = 0.0
@@ -391,6 +392,8 @@ class StructuralEvolution:
 
         info["module"] = module_name
         self._evolution_history.append(info)
+        if len(self._evolution_history) > 1000:
+            self._evolution_history = self._evolution_history[-500:]
 
         return W, b, info
 

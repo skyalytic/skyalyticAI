@@ -464,6 +464,10 @@ class NIEABrain:
 
         self.experience_buffer: deque = deque(maxlen=100_000_000 if _is_large_scale else 10000)
         self._consolidation_counter: int = 0
+        self._last_broadcast = None
+        self._input_running_mean = np.zeros(input_dim)
+        self._input_running_M2 = np.zeros(input_dim)
+        self._input_running_count = 0
 
         self.state_to_obs_W = np.random.randn(input_dim, hidden_dim) * np.sqrt(2.0 / (hidden_dim + input_dim))
         self.state_to_obs_b = np.zeros(input_dim, dtype=np.float64)
@@ -516,11 +520,6 @@ class NIEABrain:
         sensory_input = np.asarray(sensory_input, dtype=np.float64)
 
         # Use running mean and std for normalization (Welford's online algorithm)
-        if not hasattr(self, '_input_running_mean'):
-            self._input_running_mean = np.zeros(self.input_dim)
-            self._input_running_M2 = np.zeros(self.input_dim)
-            self._input_running_count = 0
-
         self._input_running_count += 1
         alpha = 1.0 / self._input_running_count
         diff_old = sensory_input - self._input_running_mean
@@ -805,7 +804,7 @@ class NIEABrain:
             action = preferred_action
 
         self.global_workspace.submit_bid(0, float(np.mean(np.abs(hidden_state))), hidden_state)
-        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.pcn.layer_sizes[-1])
+        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.pcn.layer_sizes[self.pcn.n_layers - 1])
         self.global_workspace.submit_bid(1, float(np.mean(np.abs(pcn_err))), pcn_err[:self.global_workspace.workspace_dim] if pcn_err.shape[0] >= self.global_workspace.workspace_dim else np.pad(pcn_err, (0, max(0, self.global_workspace.workspace_dim - pcn_err.shape[0]))))
         self.global_workspace.submit_bid(2, float(curiosity), np.full(self.global_workspace.workspace_dim, curiosity))
         self.global_workspace.submit_bid(3, float(confidence), np.full(self.global_workspace.workspace_dim, confidence))
@@ -1028,6 +1027,10 @@ class NIEABrain:
             # 同步稀疏连接矩阵
             if snn_layer._sparse_conn is not None:
                 snn_layer._sparse_conn.W = W.copy()
+                # 同步稀疏元数据
+                if hasattr(W, 'nnz'):
+                    snn_layer._sparse_conn.n_synapses = W.nnz
+                    snn_layer._sparse_conn.sparsity = 1.0 - (W.nnz / max(W.shape[0] * W.shape[1], 1))
         self.structural_evolution._step_counter = 0
 
     def _select_action_from_imagination(
@@ -1149,6 +1152,11 @@ class NIEABrain:
         if len(self.experience_buffer) < 10:
             return
 
+        # Save current PCN state to prevent consolidation from polluting it
+        saved_pcn_errors = [e.copy() if e is not None else None for e in self.pcn.prediction_errors]
+        saved_pcn_input = self.pcn.input_state.copy()
+        saved_pcn_layer_states = [layer.x.copy() for layer in self.pcn.layers]
+
         batch_size = min(
             self.consolidation_batch_size, len(self.experience_buffer)
         )
@@ -1177,6 +1185,12 @@ class NIEABrain:
                 self.pcn.learn()
 
         cms_result = self.complementary_memory.consolidate()
+
+        # Restore PCN state
+        self.pcn.prediction_errors = saved_pcn_errors
+        self.pcn.input_state = saved_pcn_input
+        for l_idx, layer in enumerate(self.pcn.layers):
+            layer.x = saved_pcn_layer_states[l_idx]
 
     def get_state_summary(self) -> Dict[str, Any]:
         """
@@ -1227,6 +1241,10 @@ class NIEABrain:
         self.world_model.reset()
         self.metacognition.reset()
         self.global_workspace.reset()
+        self.structural_evolution._step_counter = 0
+        self.structural_evolution._performance_history = []
+        self.structural_evolution._evolution_history = []
+        self.structural_evolution._neuron_activity = {}
         self.experience_buffer.clear()
         self._consolidation_counter = 0
         self.age = 0
@@ -1239,8 +1257,7 @@ class NIEABrain:
         self._input_running_count = 0
         self._perception_projection_W = None
         self._perception_projection_input_dim = None
-        self.state_to_obs_W = np.random.randn(self.input_dim, self.hidden_dim) * np.sqrt(2.0 / (self.hidden_dim + self.input_dim))
-        self.state_to_obs_b = np.zeros(self.input_dim, dtype=np.float64)
+        # Keep state_to_obs_W/b to stay consistent with trained world model
         self.stats = {
             "prediction_errors": [],
             "curiosity_levels": [],
@@ -1277,6 +1294,7 @@ class NIEABrain:
             "state_to_obs_b": self.state_to_obs_b.copy(),
             "age": self.age,
             "stage": self.stage,
+            "surprise_threshold": self.surprise_threshold,
             "experience_buffer": list(self.experience_buffer),
             "consolidation_counter": self._consolidation_counter,
             "stats": {k: list(v) for k, v in self.stats.items()},
@@ -1322,6 +1340,8 @@ class NIEABrain:
             self.state_to_obs_b = state["state_to_obs_b"].copy()
         self.age = state["age"]
         self.stage = state["stage"]
+        if "surprise_threshold" in state:
+            self.surprise_threshold = state["surprise_threshold"]
         if "brain_scale" in state:
             self.brain_scale = state["brain_scale"]
         if "experience_buffer" in state:
