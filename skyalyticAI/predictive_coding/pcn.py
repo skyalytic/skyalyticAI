@@ -310,6 +310,9 @@ class PredictiveCodingNetwork:
 
         batch_size = observations.shape[0]
 
+        if batch_size == 0:
+            return {"total_errors": np.array([]), "states": np.array([]).reshape(0, self.layers[0].dim if self.layers else 0), "mean_error": 0.0}
+
         saved_input = self.input_state.copy()
         saved_errors = [e.copy() if e is not None else None for e in self.prediction_errors]
         saved_states = [layer.x.copy() for layer in self.layers]
@@ -370,6 +373,9 @@ class PredictiveCodingNetwork:
             observations = observations[np.newaxis, :]
 
         batch_size = observations.shape[0]
+
+        if batch_size == 0:
+            return {"total_update": 0.0, "batch_size": 0}
 
         # Save initial weights
         saved_W = [layer.W.copy() for layer in self.layers]

@@ -127,8 +127,13 @@ class MultimodalFusion:
         for i, name in enumerate(self.modalities):
             if name in features:
                 feat = np.asarray(features[name], dtype=np.float64)
-                reliability = 1.0 / (1.0 + np.var(feat) + 1e-10)
-                self.attention_W[i] += self.learning_rate * reliability * (1.0 - prediction_error)
+                # Reliability: higher variance carries more information
+                var = np.var(feat)
+                reliability = var / (1.0 + var)  # [0, 1), monotonic in variance
+                normalized_error = prediction_error / (1.0 + prediction_error)
+                # High error → decrease attention; low error → increase
+                update = self.learning_rate * reliability * (1.0 - 2.0 * normalized_error)
+                self.attention_W[i] += update
         self.attention_W = np.clip(self.attention_W, -5.0, 5.0)
 
     def state_dict(self) -> Dict[str, Any]:

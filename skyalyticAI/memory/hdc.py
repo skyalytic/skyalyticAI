@@ -173,7 +173,12 @@ class HDCMemory:
             return result
         elif self.vector_type == VectorType.BINARY:
             threshold = len(vectors) / 2.0
-            return (result > threshold).astype(np.float64)
+            result_bin = (result >= threshold).astype(np.float64)
+            # For exact ties (even number of vectors), randomly resolve
+            tie_mask = result == threshold
+            if np.any(tie_mask):
+                result_bin[tie_mask] = self.rng.choice([0.0, 1.0], size=int(np.sum(tie_mask)))
+            return result_bin
         else:
             return result / len(vectors)
 
@@ -444,12 +449,17 @@ class HDCMemory:
                 episode_vector[zero_mask] = self.rng.choice([-1, 1], size=int(np.sum(zero_mask)))
         elif self.vector_type == VectorType.BINARY:
             threshold = len(sequence) / 2.0
-            episode_vector = (episode_vector > threshold).astype(np.float64)
+            tie_mask = episode_vector == threshold
+            episode_vector = (episode_vector >= threshold).astype(np.float64)
+            if np.any(tie_mask):
+                episode_vector[tie_mask] = self.rng.choice([0.0, 1.0], size=int(np.sum(tie_mask)))
 
         self.episodic_memory.append({
             "sequence": list(sequence),
             "vector": episode_vector.copy(),
         })
+        if len(self.episodic_memory) > 10000:
+            self.episodic_memory = self.episodic_memory[-5000:]
 
         return episode_vector
 
@@ -501,7 +511,10 @@ class HDCMemory:
         elif self.vector_type == VectorType.BINARY:
             n_actual = min(len(partial_sequence), n_pos)
             threshold = n_actual / 2.0
-            query_vec = (query_vec > threshold).astype(np.float64)
+            tie_mask = query_vec == threshold
+            query_vec = (query_vec >= threshold).astype(np.float64)
+            if np.any(tie_mask):
+                query_vec[tie_mask] = self.rng.choice([0.0, 1.0], size=int(np.sum(tie_mask)))
 
         best_match = None
         best_sim = -1.0
@@ -550,9 +563,14 @@ class HDCMemory:
             self.vector_type = VectorType(state["vector_type"])
         if "similarity_threshold" in state:
             self.similarity_threshold = state["similarity_threshold"]
-        self.item_memory = state["item_memory"]
-        self.associative_memory = state["associative_memory"]
-        self.episodic_memory = state["episodic_memory"]
+        self.item_memory = {k: v.copy() for k, v in state["item_memory"].items()}
+        self.associative_memory = {k: v.copy() for k, v in state["associative_memory"].items()}
+        self.episodic_memory = [
+            {"sequence": list(ep["sequence"]), "vector": ep["vector"].copy()}
+            for ep in state["episodic_memory"]
+        ]
+        if len(self.episodic_memory) > 10000:
+            self.episodic_memory = self.episodic_memory[-5000:]
         self._permutation = state["_permutation"].copy() if state.get("_permutation") is not None else None
 
     def __repr__(self) -> str:

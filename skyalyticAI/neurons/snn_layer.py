@@ -266,7 +266,7 @@ class SNNLayer:
         voltages = np.zeros((n_steps, self.output_dim), dtype=np.float64)
 
         for t in range(n_steps):
-            current = self.W.dot(spike_train[t])
+            current = np.asarray(self.W.dot(spike_train[t])).ravel()
             if self.bias is not None:
                 current = current + self.bias
 
@@ -352,7 +352,8 @@ class SNNLayer:
             active = ~in_refractory
 
             v_inf = v_rest + resistance * effective_current
-            v = torch.where(active, v_inf + (v - v_inf) * decay, torch.tensor(v_reset, dtype=torch.float32, device=self.device))
+            v_reset_t = torch.tensor(v_reset, dtype=torch.float32, device=self.device)
+            v = torch.where(active, v_inf + (v - v_inf) * decay, v_reset_t)
 
             if is_alif:
                 w_adapt = w_adapt * w_decay
@@ -370,6 +371,8 @@ class SNNLayer:
             refractory = torch.where(spike, torch.tensor(refractory_period, dtype=torch.float32, device=self.device), torch.clamp(refractory - dt, min=0.0))
 
             i_syn = torch.where(spike, torch.zeros_like(i_syn), i_syn)
+            # Also zero i_syn during refractory period (matches CPU behavior)
+            i_syn = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
 
             if is_alif:
                 w_adapt = torch.where(spike, w_adapt + 1.0, w_adapt)
@@ -386,11 +389,11 @@ class SNNLayer:
         if is_alif:
             self._w = w_adapt.cpu().numpy().astype(np.float64)
 
-        self._sync_to_neurons()
+        # Update spike_count from GPU results
+        spike_counts = np.sum(result_spikes > 0.5, axis=0)
+        self._spike_count += spike_counts
 
-        for j in range(self.output_dim):
-            spike_count_this_step = int(np.sum(result_spikes[:, j] > 0.5))
-            self.neurons[j].spike_count += spike_count_this_step
+        self._sync_to_neurons()
 
         return result_spikes, result_voltages
 
@@ -442,6 +445,7 @@ class SNNLayer:
         saved_refractory = self._refractory.copy()
         saved_total_current = self._total_current.copy()
         saved_w = self._w.copy() if self._w is not None else None
+        saved_spike_count = self._spike_count.copy()
         # Save individual neuron object states
         saved_neuron_states = []
         for j in range(self.output_dim):
@@ -450,6 +454,7 @@ class SNNLayer:
                 'refractory_timer': self.neurons[j].refractory_timer,
                 'i_syn': self.neurons[j].i_syn,
                 'w': getattr(self.neurons[j], 'w', 0.0),
+                'spike_count': self.neurons[j].spike_count,
             })
 
         for b in range(batch_size):
@@ -463,6 +468,7 @@ class SNNLayer:
                 self.neurons[j].v = self.neurons[j].v_rest
                 self.neurons[j].refractory_timer = 0.0
                 self.neurons[j].i_syn = 0.0
+                self.neurons[j].spike_count = 0
                 if hasattr(self.neurons[j], 'w'):
                     self.neurons[j].w = 0.0
 
@@ -473,6 +479,7 @@ class SNNLayer:
         self._v = saved_v
         self._refractory = saved_refractory
         self._total_current = saved_total_current
+        self._spike_count = saved_spike_count
         if saved_w is not None:
             self._w = saved_w
         # Restore individual neuron object states
@@ -480,6 +487,7 @@ class SNNLayer:
             self.neurons[j].v = saved_neuron_states[j]['v']
             self.neurons[j].refractory_timer = saved_neuron_states[j]['refractory_timer']
             self.neurons[j].i_syn = saved_neuron_states[j]['i_syn']
+            self.neurons[j].spike_count = saved_neuron_states[j]['spike_count']
             if hasattr(self.neurons[j], 'w'):
                 self.neurons[j].w = saved_neuron_states[j]['w']
 
@@ -494,7 +502,8 @@ class SNNLayer:
         batch_size, n_steps, _ = spike_trains.shape
 
         n0 = self.neurons[0]
-        is_alif = hasattr(n0, "w") and hasattr(n0, "beta")
+        is_alif = hasattr(n0, "w") and hasattr(n0, "beta") and hasattr(n0, "tau_w")
+        has_tau_s = hasattr(n0, "tau_s") and n0.tau_s is not None
         v_rest = n0.v_rest
         v_threshold = n0.v_threshold
         v_reset = n0.v_reset
@@ -515,6 +524,10 @@ class SNNLayer:
         refractory = torch.zeros(batch_size, self.output_dim, dtype=torch.float32, device=self.device)
         i_syn = torch.zeros(batch_size, self.output_dim, dtype=torch.float32, device=self.device)
         decay = torch.tensor(decay_val, dtype=torch.float32, device=self.device)
+
+        tau_s_decay = None
+        if has_tau_s:
+            tau_s_decay = torch.tensor(np.exp(-dt / n0.tau_s), dtype=torch.float32, device=self.device)
 
         w_adapt = None
         w_decay = None
@@ -537,14 +550,15 @@ class SNNLayer:
             in_refractory = refractory > 0
             active = ~in_refractory
 
-            effective_current = torch.where(in_refractory, torch.zeros_like(current), current)
+            if has_tau_s:
+                i_syn = current + (i_syn - current) * tau_s_decay
+                effective_current = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
+            else:
+                effective_current = torch.where(in_refractory, torch.zeros_like(current), current)
 
             v_inf = v_rest + resistance * effective_current
-            v = torch.where(
-                active,
-                v_inf + (v - v_inf) * decay,
-                torch.tensor(v_reset, dtype=torch.float32, device=self.device),
-            )
+            v_reset_t = torch.tensor(v_reset, dtype=torch.float32, device=self.device)
+            v = torch.where(active, v_inf + (v - v_inf) * decay, v_reset_t)
 
             if is_alif:
                 w_adapt = w_adapt * w_decay
@@ -566,6 +580,8 @@ class SNNLayer:
             )
 
             i_syn = torch.where(spike, torch.zeros_like(i_syn), i_syn)
+            # Also zero i_syn during refractory period (matches CPU behavior)
+            i_syn = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
 
             if is_alif:
                 w_adapt = torch.where(spike, w_adapt + 1.0, w_adapt)
@@ -606,7 +622,7 @@ class SNNLayer:
                 f"got {input_spikes.shape}"
             )
 
-        current = self.W.dot(input_spikes)
+        current = np.asarray(self.W.dot(input_spikes)).ravel()
         if self.bias is not None:
             current = current + self.bias
 

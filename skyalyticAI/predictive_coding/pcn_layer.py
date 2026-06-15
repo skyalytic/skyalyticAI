@@ -232,17 +232,8 @@ class PCNLayer:
             db = self.sigma * error_below
         else:
             prediction = self.predict(x)
-            if self.f_deriv is not None:
-                J = self.compute_prediction_deriv(x)
-                if self.sparse and scipy_sparse.issparse(J):
-                    J_dense = np.asarray(J.todense())
-                    W_dense = np.asarray(self.W.todense())
-                else:
-                    J_dense = J
-                    W_dense = self.W
-                f_deriv_elem = np.sum(J_dense * W_dense, axis=1) / (np.sum(W_dense ** 2, axis=1) + 1e-10)
-            else:
-                f_deriv_elem = 1.0 - prediction ** 2
+            # tanh derivative: 1 - tanh(y)^2 where y = W@x + b
+            f_deriv_elem = 1.0 - prediction ** 2
             dW = self.sigma * np.outer(error_below * f_deriv_elem, x)
             db = self.sigma * error_below * f_deriv_elem
 

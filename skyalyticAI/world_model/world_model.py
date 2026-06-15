@@ -594,7 +594,7 @@ class WorldModel:
         recon_loss_next = float(np.mean((next_obs_pred - next_obs) ** 2))
         kl_loss = float(-0.5 * np.sum(1 + logvar - mu ** 2 - np.exp(logvar)))
 
-        reward_pred_raw, reward_activations, reward_pre = self.reward_net.forward_with_activations(z)
+        reward_pred_raw, reward_activations, reward_pre = self.reward_net.forward_with_activations(z_next_pred)
         reward_pred = float(reward_pred_raw[0])
         reward_loss = 0.0
         if reward is not None:
@@ -610,10 +610,6 @@ class WorldModel:
         d_z_next_from_dec = self._compute_gradient_without_update(
             self.decoder_net, d_next_obs_pred, dec_next_activations, dec_next_pre
         )
-
-        d_z_from_dyn = self._compute_gradient_without_update(
-            self.dynamics_net, d_z_next_from_dec, dyn_activations, dyn_pre
-        )[:self.state_dim]
 
         d_obs_recon = 2.0 * (obs_recon - obs) / max(obs.size, 1)
 
@@ -648,12 +644,18 @@ class WorldModel:
             self.decoder_net.weights[i] += dec_delta_w_obs[i]
             self.decoder_net.biases[i] += dec_delta_b_obs[i]
 
-        d_z_from_reward = np.zeros_like(d_z_from_obs)
+        # Reward gradient now flows through z_next_pred, so it must
+        # propagate back through the dynamics network to reach z.
+        d_z_next_from_reward = np.zeros_like(z_next_pred)
         if reward is not None:
             d_reward_pred = np.array([2.0 * (reward_pred - reward)])
-            d_z_from_reward = self.reward_net.backward(d_reward_pred, reward_activations, reward_pre, clip)
+            d_z_next_from_reward = self.reward_net.backward(d_reward_pred, reward_activations, reward_pre, clip)
 
-        d_z_total = d_z_from_obs + d_z_from_dyn + d_z_from_reward
+        # Accumulate all gradients w.r.t. z_next_pred and back-prop through dynamics
+        d_z_next_total = d_z_next_from_dec + d_z_next_from_reward
+        d_z_from_dyn_and_reward = self.dynamics_net.backward(d_z_next_total, dyn_activations, dyn_pre, clip)[:self.state_dim]
+
+        d_z_total = d_z_from_obs + d_z_from_dyn_and_reward
 
         d_mu = d_z_total + self.kl_weight * mu
         d_logvar = d_z_total * 0.5 * eps * std + self.kl_weight * 0.5 * (np.exp(logvar) - 1)
@@ -672,7 +674,8 @@ class WorldModel:
         self.enc_W_logvar -= lr * self._clip_gradient(d_enc_W_logvar)
         self.enc_b_logvar -= lr * self._clip_gradient(d_enc_b_logvar)
 
-        self.dynamics_net.backward(d_z_next_from_dec, dyn_activations, dyn_pre, clip)
+        # dynamics_net backward already done above with combined gradient
+        # (d_z_next_from_dec + d_z_next_from_reward)
 
         self.loss_history.append({
             "total": total_loss,
@@ -729,8 +732,8 @@ class WorldModel:
         # Decoder – next obs prediction
         next_obs_pred = self._decoder_net_torch(z_next_pred)  # (1, obs_dim)
 
-        # Reward
-        reward_pred = self._reward_net_torch(z)  # (1, 1)
+        # Reward – predict from z_next (next latent state)
+        reward_pred = self._reward_net_torch(z_next_pred)  # (1, 1)
 
         # --- Losses ---
         recon_loss_obs = torch.mean((obs_recon - obs_t) ** 2)
@@ -805,7 +808,7 @@ class WorldModel:
         sa = torch.cat([z, action_t], dim=-1)
         z_next_pred = self._dynamics_net_torch(sa)
         next_obs_pred = self._decoder_net_torch(z_next_pred)
-        reward_pred = self._reward_net_torch(z)  # (B, 1)
+        reward_pred = self._reward_net_torch(z_next_pred)  # (B, 1)
 
         # --- Losses (averaged over batch) ---
         recon_loss_obs = torch.mean((obs_recon - obs_t) ** 2)

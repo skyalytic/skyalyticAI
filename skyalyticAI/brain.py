@@ -468,6 +468,7 @@ class NIEABrain:
         self._input_running_mean = np.zeros(input_dim)
         self._input_running_M2 = np.zeros(input_dim)
         self._input_running_count = 0
+        self._input_running_std = np.ones(input_dim)
 
         self.state_to_obs_W = np.random.randn(input_dim, hidden_dim) * np.sqrt(2.0 / (hidden_dim + input_dim))
         self.state_to_obs_b = np.zeros(input_dim, dtype=np.float64)
@@ -526,15 +527,20 @@ class NIEABrain:
         self._input_running_mean += alpha * diff_old
         diff_new = sensory_input - self._input_running_mean
         self._input_running_M2 += diff_old * diff_new
-        variance = self._input_running_M2 / self._input_running_count
-        self._input_running_std = np.sqrt(variance + 1e-8)
+        if self._input_running_count >= 2:
+            variance = self._input_running_M2 / self._input_running_count
+            self._input_running_std = np.sqrt(variance + 1e-8)
 
-        normalized = (sensory_input - self._input_running_mean) / (self._input_running_std + 1e-8)
-        normalized = np.clip(normalized, -3.0, 3.0) / 3.0  # Map to roughly [0, 1] range
-        normalized = (normalized + 1.0) / 2.0  # Shift to [0, 1]
+        if self._input_running_count >= 2:
+            normalized = (sensory_input - self._input_running_mean) / (self._input_running_std + 1e-8)
+            normalized = np.clip(normalized, -3.0, 3.0) / 3.0  # Map to roughly [0, 1] range
+            normalized = (normalized + 1.0) / 2.0  # Shift to [0, 1]
+        else:
+            # First sample: insufficient statistics, use simple scaling
+            normalized = np.clip(sensory_input, 0.0, 1.0)
 
-        rates = np.clip(normalized, 0.0, 1.0) * 100.0
-        probs = np.clip(rates / 1000.0 * (1000.0 / self.spike_encoding_steps), 0.0, 1.0)
+        # Poisson rate coding: probability proportional to normalized input
+        probs = np.clip(normalized * 0.5, 0.0, 1.0)
 
         spike_train = np.zeros(
             (self.spike_encoding_steps, self.input_dim), dtype=np.float64
@@ -593,21 +599,33 @@ class NIEABrain:
 
         inference_result = self.pcn.infer(hidden_state)
 
-        self._saved_pcn_state = {
-            "prediction_errors": [
-                e.copy() if e is not None else None
-                for e in self.pcn.prediction_errors
-            ],
-            "input_state": self.pcn.input_state.copy(),
-            "layer_states": [layer.x.copy() for layer in self.pcn.layers],
-        }
+        # Save PCN state for learn() before any modification
+        # Only save on first perceive to avoid overwrite by subsequent perceive calls
+        if self._saved_pcn_state is None:
+            self._saved_pcn_state = {
+                "prediction_errors": [
+                    e.copy() if e is not None else None
+                    for e in self.pcn.prediction_errors
+                ],
+                "input_state": self.pcn.input_state.copy(),
+                "layer_states": [layer.x.copy() for layer in self.pcn.layers],
+            }
 
         if self.pcn.layer_sizes[0] == self.hidden_dim:
             prediction = self.pcn.predict_next()
         else:
             prediction = self.pcn.layers[0].predict()
 
+        # Compute prediction_error BEFORE broadcast injection to keep it pure
         prediction_error = hidden_state - prediction
+
+        # Inject broadcast signal AFTER computing prediction_error
+        if self._last_broadcast is not None:
+            if self._last_broadcast.shape[0] == hidden_state.shape[0]:
+                # Guard against NaN/Inf in broadcast signal
+                if np.all(np.isfinite(self._last_broadcast)):
+                    hidden_state += self._last_broadcast
+            self._last_broadcast = None  # Always clear
 
         return hidden_state, prediction, prediction_error
 
@@ -705,8 +723,8 @@ class NIEABrain:
         """根据对错反馈学习说话。"""
         if self.language_head is None:
             return {}
-        sign = 1.0 if reward > 0 else -1.0
-        return self.language_head.learn(hidden_state, target_index, sign)
+        magnitude = min(abs(reward), 10.0)  # Cap magnitude to prevent extreme updates
+        return self.language_head.learn(hidden_state, target_index, magnitude)
 
     def asr_decode(self, hidden_state: np.ndarray) -> int:
         """ASR 头：从隐藏状态预测下一字符索引。"""
@@ -724,16 +742,16 @@ class NIEABrain:
         """ASR 监督学习（字符级）。"""
         if self.asr_head is None:
             return {}
-        sign = 1.0 if reward > 0 else -1.0
-        out = self.asr_head.learn(hidden_state, target_index, sign)
+        magnitude = min(abs(reward), 10.0)
+        out = self.asr_head.learn(hidden_state, target_index, magnitude)
         return {"asr_loss": out.get("speech_loss", 0.0), "asr_target_prob": out.get("target_prob", 0.0)}
 
     def learn_ocr(self, hidden_state: np.ndarray, target_index: int, reward: float) -> Dict[str, float]:
         """OCR 监督学习（字符级）。"""
         if self.ocr_head is None:
             return {}
-        sign = 1.0 if reward > 0 else -1.0
-        out = self.ocr_head.learn(hidden_state, target_index, sign)
+        magnitude = min(abs(reward), 10.0)
+        out = self.ocr_head.learn(hidden_state, target_index, magnitude)
         return {"ocr_loss": out.get("speech_loss", 0.0), "ocr_target_prob": out.get("target_prob", 0.0)}
 
     def set_school_stage(self, stage: str) -> None:
@@ -790,27 +808,48 @@ class NIEABrain:
         self.active_inference.perceive(hidden_state)
         action, qualities, action_probs = self.active_inference.select_action()
 
-        if prefer_speech and self.language_head is not None:
-            action = self.speak(hidden_state)
-
         memory_context = self._query_memory(hidden_state)
 
-        imagined_outcomes = self._imagine_action_outcomes(hidden_state)
+        imagined_outcomes = None
+        if prefer_speech and self.language_head is not None:
+            action = self.speak(hidden_state)
+        else:
+            imagined_outcomes = self._imagine_action_outcomes(hidden_state)
 
-        preferred_action = self._select_action_from_imagination(
-            imagined_outcomes, confidence, curiosity
-        )
-        if preferred_action is not None:
-            action = preferred_action
+            preferred_action = self._select_action_from_imagination(
+                imagined_outcomes, confidence, curiosity
+            )
+            if preferred_action is not None:
+                action = preferred_action
 
-        self.global_workspace.submit_bid(0, float(np.mean(np.abs(hidden_state))), hidden_state)
-        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.pcn.layer_sizes[self.pcn.n_layers - 1])
+        self.global_workspace.submit_bid(0, float(np.mean(np.abs(hidden_state))), hidden_state.copy())
+        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.pcn.layer_sizes[-2])
         self.global_workspace.submit_bid(1, float(np.mean(np.abs(pcn_err))), pcn_err[:self.global_workspace.workspace_dim] if pcn_err.shape[0] >= self.global_workspace.workspace_dim else np.pad(pcn_err, (0, max(0, self.global_workspace.workspace_dim - pcn_err.shape[0]))))
         self.global_workspace.submit_bid(2, float(curiosity), np.full(self.global_workspace.workspace_dim, curiosity))
         self.global_workspace.submit_bid(3, float(confidence), np.full(self.global_workspace.workspace_dim, confidence))
-        self.global_workspace.submit_bid(4, float(len(memory_context)) / max(1, self.hd_memory.dim) if memory_context else 0.0, np.zeros(self.global_workspace.workspace_dim))
+        # Module 4: Memory - encode memory context into workspace vector
+        memory_content = np.zeros(self.global_workspace.workspace_dim, dtype=np.float64)
+        if memory_context:
+            # memory_context is a list of (key, similarity) tuples from HDC retrieve
+            for mi, mc in enumerate(memory_context[:3]):
+                if isinstance(mc, tuple) and len(mc) >= 2:
+                    # Use similarity as a scalar signal
+                    sim = float(mc[1]) if isinstance(mc[1], (int, float, np.floating)) else 0.0
+                    memory_content[mi] = sim
+                elif isinstance(mc, np.ndarray):
+                    n = min(mc.shape[0], self.global_workspace.workspace_dim)
+                    memory_content[:n] += mc[:n] / max(1, len(memory_context))
+        memory_bid = float(len(memory_context)) / max(1, 3.0) if memory_context else 0.0
+        self.global_workspace.submit_bid(4, memory_bid, memory_content)
         self.global_workspace.submit_bid(5, float(external_reward), np.full(self.global_workspace.workspace_dim, external_reward))
-        self.global_workspace.submit_bid(6, float(np.mean(np.abs(hidden_state))), hidden_state)
+        # Module 6: World model prediction (distinct from SNN perception)
+        wm_obs = self.state_to_obs_W @ hidden_state + self.state_to_obs_b
+        if wm_obs.shape[0] == self.world_model.obs_dim:
+            wm_pred = self.world_model.decode(self.world_model.encode_deterministic(wm_obs))
+        else:
+            wm_pred = np.zeros(self.global_workspace.workspace_dim)
+        wm_content = wm_pred[:self.global_workspace.workspace_dim] if wm_pred.shape[0] >= self.global_workspace.workspace_dim else np.pad(wm_pred, (0, max(0, self.global_workspace.workspace_dim - wm_pred.shape[0])))
+        self.global_workspace.submit_bid(6, float(np.mean(np.abs(wm_content))), wm_content)
 
         gw_result = self.global_workspace.compete()
 
@@ -822,8 +861,7 @@ class NIEABrain:
             if broadcast_norm > 1e-10:
                 broadcast_signal = 0.1 * broadcast / broadcast_norm
                 if broadcast_signal.shape[0] == hidden_state.shape[0]:
-                    hidden_state += broadcast_signal
-                    # 同步更新内部状态，使广播信号影响后续 perceive/learn
+                    # Store broadcast for application in next perceive()
                     self._last_broadcast = broadcast_signal.copy()
         else:
             self._last_broadcast = None
@@ -911,13 +949,16 @@ class NIEABrain:
         wm_loss = self.world_model.train_step(obs, action_vec, next_obs, reward=wm_reward)
 
         self.active_inference.learn_transition(hidden_state, action, next_hidden_state)
-        self.active_inference.learn_observation(hidden_state, hidden_state)
+        # Use belief_mu as state and hidden_state as observation for non-trivial learning
+        self.active_inference.learn_observation(self.active_inference.belief_mu, hidden_state)
 
         surprise = float(np.linalg.norm(prediction_error))
-        if surprise > self.surprise_threshold or reward > 0:
+        if surprise > self.surprise_threshold or abs(reward) > 0:
             self._store_to_memory(hidden_state, action, next_hidden_state, reward, surprise)
 
-        self.complementary_memory.store(hidden_state, next_hidden_state)
+        # Store to complementary memory with same filtering as HDC
+        if surprise > self.surprise_threshold or abs(reward) > 0:
+            self.complementary_memory.store(hidden_state, next_hidden_state)
 
         self.structural_evolution.record_performance(1.0 - surprise)
         self.structural_evolution.record_neuron_activity("snn", hidden_state)
@@ -937,7 +978,13 @@ class NIEABrain:
             meta_input = np.concatenate([state_part, meta_features])
 
         confidence = self.metacognition.forward(meta_input)["confidence"]
-        actual_outcome = 1.0 if reward > 0 else 0.0
+        # Map reward to outcome: positive=1, negative=0, zero=0.5 (neutral)
+        if reward > 0:
+            actual_outcome = 1.0
+        elif reward < 0:
+            actual_outcome = 0.0
+        else:
+            actual_outcome = 0.5
         self.metacognition.update_meta_knowledge(
             meta_input, confidence, actual_outcome, reward
         )
@@ -989,11 +1036,11 @@ class NIEABrain:
         self, hidden_state: np.ndarray
     ) -> Dict[int, Dict[str, Any]]:
         obs = self.state_to_obs_W @ hidden_state + self.state_to_obs_b
+        z = self.world_model.encode_deterministic(obs)  # Same for all actions
         outcomes = {}
         for a in range(self.action_dim):
             action_vec = np.zeros(self.action_dim, dtype=np.float64)
             action_vec[a] = 1.0
-            z = self.world_model.encode_deterministic(obs)
             z_next = self.world_model.predict_next_state(z, action_vec)
             obs_next = self.world_model.decode(z_next)
             reward_pred = self.world_model.predict_reward(z_next)
@@ -1074,6 +1121,20 @@ class NIEABrain:
             padded[:state_vec.shape[0]] = state_vec
             state_vec = padded
         results = self.hd_memory.retrieve(state_vec, top_k=top_k)
+
+        # Also retrieve associative memories for the top results
+        for key, sim in results[:2]:
+            for suffix in ["__action", "__reward", "__next_state"]:
+                assoc_key = key + suffix
+                if assoc_key in self.hd_memory.associative_memory:
+                    assoc_val = self.hd_memory.retrieve_association(assoc_key)
+                    if assoc_val is not None:
+                        # Normalize to (str, float) format consistent with retrieve()
+                        if isinstance(assoc_val, tuple) and len(assoc_val) >= 2:
+                            results.append((assoc_key, float(assoc_val[1])))
+                        else:
+                            results.append((assoc_key, 0.5))
+
         return results
 
     def _store_to_memory(
@@ -1103,7 +1164,7 @@ class NIEABrain:
         state_key = "exp_{}".format(self.age)
         action_key = "act_{}".format(action)
         next_state_key = "nexp_{}".format(self.age)
-        reward_key = "rew_{}".format(int(reward > 0))
+        reward_key = "rew_{:.1f}".format(round(reward, 1))
         surprise_key = "sur_{}".format(min(int(surprise * 10), 9))
 
         if state_key not in self.hd_memory.item_memory:
@@ -1129,18 +1190,29 @@ class NIEABrain:
 
         if reward_key not in self.hd_memory.item_memory:
             reward_vec = np.zeros(self.hd_memory.dim, dtype=np.float64)
-            reward_vec[0] = 1.0 if reward > 0 else -1.0
+            # Use multiple dimensions to encode reward magnitude
+            n_active = max(1, min(int(abs(reward) * 10), self.hd_memory.dim))
+            if reward > 0:
+                reward_vec[:n_active] = 1.0
+            elif reward < 0:
+                reward_vec[:n_active] = -1.0
+            else:
+                # Zero reward: use a single fixed position as neutral marker
+                reward_vec[self.hd_memory.dim // 2] = 1.0
             self.hd_memory.add_concept(reward_key, reward_vec)
 
         if surprise_key not in self.hd_memory.item_memory:
             surprise_vec = np.zeros(self.hd_memory.dim, dtype=np.float64)
-            surprise_vec[int(surprise * 10 * self.hd_memory.dim / 10) % self.hd_memory.dim] = 1.0
+            safe_surprise = surprise if np.isfinite(surprise) else 0.0
+            idx = min(int(safe_surprise / 10.0 * self.hd_memory.dim), self.hd_memory.dim - 1)
+            idx = max(0, idx)
+            surprise_vec[idx] = 1.0
             self.hd_memory.add_concept(surprise_key, surprise_vec)
 
-        self.hd_memory.store_association(state_key, action_key)
-        self.hd_memory.store_association(state_key, next_state_key)
-        self.hd_memory.store_association(state_key, reward_key)
-        self.hd_memory.store_association(state_key, surprise_key)
+        self.hd_memory.store_association(state_key + "__action", action_key)
+        self.hd_memory.store_association(state_key + "__next_state", next_state_key)
+        self.hd_memory.store_association(state_key + "__reward", reward_key)
+        self.hd_memory.store_association(state_key + "__surprise", surprise_key)
 
     def _consolidate_memory(self) -> None:
         """
@@ -1170,6 +1242,8 @@ class NIEABrain:
 
             if state.shape[0] != self.state_to_obs_W.shape[1]:
                 continue
+            if next_state.shape[0] != self.state_to_obs_W.shape[1]:
+                continue
 
             action_vec = np.zeros(self.action_dim, dtype=np.float64)
             action_vec[action % self.action_dim] = 1.0
@@ -1181,6 +1255,11 @@ class NIEABrain:
             self.world_model.train_step(obs, action_vec, next_obs, reward=reward)
 
             if state.shape[0] == self.pcn.layer_sizes[0]:
+                # Reset PCN state for each replay sample to ensure independent inference
+                for pcn_layer in self.pcn.layers:
+                    pcn_layer.x = np.zeros(pcn_layer.dim, dtype=np.float64)
+                self.pcn.prediction_errors = [None] * self.pcn.n_layers
+                self.pcn.input_state = np.zeros(self.pcn.layer_sizes[0], dtype=np.float64)
                 self.pcn.infer(state)
                 self.pcn.learn()
 
@@ -1235,16 +1314,18 @@ class NIEABrain:
             snn_layer.reset()
         self.stdp_layer.reset()
         self.pcn.reset()
-        self.active_inference.reset()
+        self.active_inference.reset_all()
         self.hd_memory.reset()
         self.complementary_memory.reset()
         self.world_model.reset()
-        self.metacognition.reset()
-        self.global_workspace.reset()
+        self.metacognition.reset_all()
+        self.global_workspace.reset_all()
         self.structural_evolution._step_counter = 0
         self.structural_evolution._performance_history = []
         self.structural_evolution._evolution_history = []
         self.structural_evolution._neuron_activity = {}
+        if hasattr(self.structural_evolution, '_weight_history'):
+            self.structural_evolution._weight_history = []
         self.experience_buffer.clear()
         self._consolidation_counter = 0
         self.age = 0
@@ -1255,6 +1336,7 @@ class NIEABrain:
         self._input_running_mean = np.zeros(self.input_dim)
         self._input_running_M2 = np.zeros(self.input_dim)
         self._input_running_count = 0
+        self._input_running_std = np.ones(self.input_dim)
         self._perception_projection_W = None
         self._perception_projection_input_dim = None
         # Keep state_to_obs_W/b to stay consistent with trained world model
@@ -1276,9 +1358,13 @@ class NIEABrain:
         """
         for snn_layer in self.snn_layers:
             snn_layer.reset()
-        self.pcn.prediction_errors = [None] * self.pcn.n_layers
+        self.pcn.reset()
         self._saved_pcn_state = None
+        self._last_broadcast = None
         self.global_workspace.reset()
+        self.stdp_layer.reset()
+        self.active_inference.reset()
+        self.metacognition.reset()
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the brain state for serialization."""
@@ -1315,9 +1401,13 @@ class NIEABrain:
             ),
             "sparse": self.sparse,
             "brain_scale": self.brain_scale,
-            "_input_running_mean": self._input_running_mean.copy() if hasattr(self, '_input_running_mean') else None,
-            "_input_running_M2": self._input_running_M2.copy() if hasattr(self, '_input_running_M2') else None,
-            "_input_running_count": self._input_running_count if hasattr(self, '_input_running_count') else None,
+            "visual_encoder": self.visual_encoder.state_dict() if self.visual_encoder else None,
+            "audio_encoder": self.audio_encoder.state_dict() if self.audio_encoder else None,
+            "multimodal_fusion": self.multimodal_fusion.state_dict() if self.multimodal_fusion else None,
+            "_input_running_mean": self._input_running_mean.copy(),
+            "_input_running_M2": self._input_running_M2.copy(),
+            "_input_running_count": self._input_running_count,
+            "_input_running_std": self._input_running_std.copy(),
         }
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
@@ -1327,6 +1417,13 @@ class NIEABrain:
                 if i < len(self.snn_layers):
                     self.snn_layers[i].load_state_dict(snn_state)
         elif "snn_layer" in state:
+            import warnings
+            warnings.warn(
+                "Loading legacy checkpoint with single snn_layer. "
+                "Only the last SNN layer will be restored; earlier layers "
+                "will keep random initialization.",
+                RuntimeWarning,
+            )
             self.snn_layers[-1].load_state_dict(state["snn_layer"])
         self.stdp_layer.load_state_dict(state["stdp_layer"])
         self.pcn.load_state_dict(state["pcn"])
@@ -1338,8 +1435,8 @@ class NIEABrain:
             self.state_to_obs_W = state["state_to_obs_W"].copy()
         if "state_to_obs_b" in state:
             self.state_to_obs_b = state["state_to_obs_b"].copy()
-        self.age = state["age"]
-        self.stage = state["stage"]
+        self.age = state.get("age", 0)
+        self.stage = state.get("stage", DevelopmentStage.SENSORIMOTOR)
         if "surprise_threshold" in state:
             self.surprise_threshold = state["surprise_threshold"]
         if "brain_scale" in state:
@@ -1377,6 +1474,19 @@ class NIEABrain:
             self._input_running_M2 = state["_input_running_M2"].copy()
         if "_input_running_count" in state and state["_input_running_count"] is not None:
             self._input_running_count = state["_input_running_count"]
+        if "_input_running_std" in state and state["_input_running_std"] is not None:
+            self._input_running_std = state["_input_running_std"].copy()
+
+        if "visual_encoder" in state and state["visual_encoder"] is not None and self.visual_encoder is not None:
+            self.visual_encoder.load_state_dict(state["visual_encoder"])
+        if "audio_encoder" in state and state["audio_encoder"] is not None and self.audio_encoder is not None:
+            self.audio_encoder.load_state_dict(state["audio_encoder"])
+        if "multimodal_fusion" in state and state["multimodal_fusion"] is not None and self.multimodal_fusion is not None:
+            self.multimodal_fusion.load_state_dict(state["multimodal_fusion"])
+
+        # Reset runtime state that should not persist across loads
+        self._saved_pcn_state = None
+        self._last_broadcast = None
 
     def get_brain_stats(self) -> Dict[str, Any]:
         """返回人脑规模统计信息"""

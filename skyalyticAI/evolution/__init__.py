@@ -329,11 +329,17 @@ class StructuralEvolution:
 
             if activity_correlation.shape[0] > j:
                 correlations = activity_correlation[j]
-                best_partner = int(np.argmax(np.abs(correlations)))
-                best_partner = min(best_partner, in_dim - 1)
+                valid_len = min(len(correlations), in_dim)
+                corr_abs = np.abs(correlations[:valid_len]).copy()
+                if j < valid_len:
+                    corr_abs[j] = -1.0  # Exclude self-correlation
+                best_partner = int(np.argmax(corr_abs))
                 if best_partner != j:
-                    W[i, best_partner] += W[i, j] * 0.5
+                    transferred = W[i, j] * 0.5
+                    W[i, best_partner] += transferred
                     W[i, j] = 0.0
+                    # Clip to prevent unbounded growth
+                    W[i, best_partner] = np.clip(W[i, best_partner], -2.0, 2.0)
                     n_rewired += 1
 
         info = {

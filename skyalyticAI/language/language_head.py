@@ -88,10 +88,14 @@ class LanguageHead:
         p = self.probs(h)
         target = np.zeros(self.vocab_size, dtype=np.float64)
         target[target_index] = 1.0
-        scale = self.learning_rate * abs(float(reward))
+        # Always move toward target; magnitude proportional to |reward|
+        # (target_index is the correct answer regardless of reward sign)
+        scale = self.learning_rate * abs(float(reward)) / self.temperature
         err = target - p
         self.W += scale * np.outer(err, h)
         self.b += scale * err
+        self.W = np.clip(self.W, -5.0, 5.0)
+        self.b = np.clip(self.b, -5.0, 5.0)
         return {"speech_loss": float(np.linalg.norm(err)), "target_prob": float(p[target_index])}
 
     def state_dict(self) -> Dict[str, np.ndarray]:

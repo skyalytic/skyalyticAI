@@ -428,7 +428,7 @@ class MetacognitiveModule:
         }
 
     def reset(self) -> None:
-        """Reset the metacognitive module."""
+        """Reset runtime state only (preserves learned weights)."""
         self.memory.clear()
         self.confidence_history = []
         self.actual_error_history = []
@@ -436,6 +436,17 @@ class MetacognitiveModule:
         self.calibration_score = 0.5
         self._smoothed_confidence = 0.5
         self._smoothed_lr_factor = 1.0
+
+    def reset_all(self) -> None:
+        """Reset everything including learned weights (for full brain reset)."""
+        self.reset()
+        scale_w1 = np.sqrt(2.0 / (self.input_dim + self.hidden_dim))
+        self.W1 = np.random.randn(self.hidden_dim, self.input_dim) * scale_w1
+        self.b1 = np.zeros(self.hidden_dim, dtype=np.float64)
+
+        scale_w2 = np.sqrt(2.0 / (self.hidden_dim + 3))
+        self.W2 = np.random.randn(3, self.hidden_dim) * scale_w2
+        self.b2 = np.zeros(3, dtype=np.float64)
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the module state for serialization."""

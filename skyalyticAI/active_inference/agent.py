@@ -277,6 +277,8 @@ class ActiveInferenceAgent:
         self.state_dim = state_dim
         self.obs_dim = obs_dim
         self.n_actions = n_actions
+        self.hidden_dim = hidden_dim
+        self.n_hidden_layers = n_hidden_layers
         self.planning_horizon = planning_horizon
         self.temperature = temperature
         self.learning_rate = learning_rate
@@ -521,7 +523,25 @@ class ActiveInferenceAgent:
 
         obs_mu, obs_Sigma = self.predict_observation(next_mu)
 
-        epistemic_value = self._compute_epistemic_value(next_mu, next_Sigma)
+        # Compute Jacobian of transition model for covariance propagation
+        # (mirrors the multi-step planning code in _select_action_multi_step)
+        eps_jac = 1e-5
+        J_trans = np.zeros((self.state_dim, self.state_dim), dtype=np.float64)
+        action_vec = np.zeros(self.n_actions, dtype=np.float64)
+        action_vec[action % self.n_actions] = 1.0
+        for j in range(self.state_dim):
+            e_j = np.zeros(self.state_dim, dtype=np.float64)
+            e_j[j] = eps_jac
+            sa_plus = np.concatenate([self.belief_mu + e_j, action_vec])
+            sa_minus = np.concatenate([self.belief_mu - e_j, action_vec])
+            trans_plus = self.transition_net.forward(sa_plus)[:self.state_dim]
+            trans_minus = self.transition_net.forward(sa_minus)[:self.state_dim]
+            J_trans[:, j] = (trans_plus - trans_minus) / (2.0 * eps_jac)
+
+        # Propagate belief covariance through transition model
+        prior_Sigma = J_trans @ self.belief_Sigma @ J_trans.T + next_Sigma
+
+        epistemic_value = self._compute_epistemic_value(next_mu, prior_Sigma)
 
         pragmatic_value = self._compute_pragmatic_value(obs_mu, obs_Sigma)
 
@@ -816,7 +836,7 @@ class ActiveInferenceAgent:
         def _obs_fn(s: "torch.Tensor") -> "torch.Tensor":
             return self._obs_net_torch(s)[:self.obs_dim]
 
-        J_obs = torch.autograd.functional.jacobian(_obs_fn, next_mu_t)
+        J_obs = torch.autograd.functional.jacobian(_obs_fn, next_mu_t.detach())
 
         # Bayesian update: posterior_precision = prior_precision + J^T obs_Sigma^{-1} J
         try:
@@ -878,8 +898,14 @@ class ActiveInferenceAgent:
                 d, dtype=torch.float64, device=self.device
             )
 
-        log_det_pref = torch.linalg.slogdet(pref_Sigma_d)[1]
-        log_det_obs = torch.linalg.slogdet(obs_Sigma_d)[1]
+        try:
+            log_det_pref = torch.linalg.slogdet(pref_Sigma_d)[1]
+        except RuntimeError:
+            log_det_pref = torch.tensor(0.0, dtype=torch.float64, device=self.device)
+        try:
+            log_det_obs = torch.linalg.slogdet(obs_Sigma_d)[1]
+        except RuntimeError:
+            log_det_obs = torch.tensor(0.0, dtype=torch.float64, device=self.device)
 
         kl = 0.5 * (
             torch.trace(pref_Sigma_inv @ obs_Sigma_d)
@@ -934,8 +960,27 @@ class ActiveInferenceAgent:
                 torch.clamp(obs_var_t, min=1e-8, max=100.0)
             )
 
+            # Compute Jacobian of transition model for covariance propagation
+            def _trans_fn(s: "torch.Tensor") -> "torch.Tensor":
+                sa_inner = torch.cat([s, torch.as_tensor(
+                    action_vec, dtype=torch.float64, device=self.device
+                )])
+                return self._trans_net_torch(sa_inner)[:self.state_dim]
+
+            J_trans = torch.autograd.functional.jacobian(
+                _trans_fn, torch.as_tensor(
+                    self.belief_mu, dtype=torch.float64, device=self.device
+                ).detach()
+            )
+
+            # Propagate belief covariance through transition model
+            belief_Sigma_t = torch.as_tensor(
+                self.belief_Sigma, dtype=torch.float64, device=self.device
+            )
+            prior_Sigma_t = J_trans @ belief_Sigma_t @ J_trans.T + next_Sigma_t
+
             epistemic_values[a] = self._compute_epistemic_value_gpu(
-                next_mu_t, next_Sigma_t
+                next_mu_t, prior_Sigma_t
             )
             pragmatic_values[a] = self._compute_pragmatic_value_gpu(
                 obs_mu_t, obs_Sigma_t
@@ -1029,7 +1074,7 @@ class ActiveInferenceAgent:
                 discount = 1.0 / (1.0 + t)
                 cumulative_quality += discount * (epistemic + pragmatic)
 
-                current_mu_t = next_mu_t
+                current_mu_t = next_mu_t.detach()
 
             policy_qualities[pi_idx] = cumulative_quality
 
@@ -1361,7 +1406,14 @@ class ActiveInferenceAgent:
         """
         sign, logdet = np.linalg.slogdet(self.belief_Sigma)
         if sign <= 0:
-            logdet = 0.0
+            jitter = 1e-6
+            for _ in range(5):
+                sign, logdet = np.linalg.slogdet(
+                    self.belief_Sigma + jitter * np.eye(self.state_dim, dtype=np.float64)
+                )
+                if sign > 0:
+                    break
+                jitter *= 10
         return 0.5 * (self.state_dim * np.log(2.0 * np.pi * np.e) + logdet)
 
     def set_preferences(
@@ -1393,11 +1445,48 @@ class ActiveInferenceAgent:
             self.preference_Sigma = np.eye(self.obs_dim, dtype=np.float64)
 
     def reset(self) -> None:
-        """Reset the agent to initial state."""
+        """Reset runtime state (preserves learned network weights)."""
         self.belief_mu = np.zeros(self.state_dim, dtype=np.float64)
         self.belief_Sigma = np.eye(self.state_dim, dtype=np.float64)
+        self._prior_mu = np.zeros(self.state_dim, dtype=np.float64)
+        self._prior_Sigma = np.eye(self.state_dim, dtype=np.float64)
         self.history = []
         self.step_count = 0
+
+    def reset_all(self) -> None:
+        """Reset everything including learned network weights (for full brain reset)."""
+        self.reset()
+        self.preference_mu = np.zeros(self.obs_dim, dtype=np.float64)
+        self.preference_Sigma = np.eye(self.obs_dim, dtype=np.float64)
+        rng = np.random.default_rng(42)
+        self.transition_net = _MLP(
+            input_dim=self.state_dim + self.n_actions,
+            hidden_dims=[self.hidden_dim] * self.n_hidden_layers,
+            output_dim=self.state_dim * 2,
+            learning_rate=self.learning_rate,
+            rng=rng,
+        )
+        self.observation_net = _MLP(
+            input_dim=self.state_dim,
+            hidden_dims=[self.hidden_dim] * self.n_hidden_layers,
+            output_dim=self.obs_dim * 2,
+            learning_rate=self.learning_rate,
+            rng=rng,
+        )
+        if self._use_gpu:
+            self._trans_net_torch = _MLP_Torch(
+                input_dim=self.state_dim + self.n_actions,
+                hidden_dims=[self.hidden_dim] * self.n_hidden_layers,
+                output_dim=self.state_dim * 2,
+                device=self.device,
+            )
+            self._obs_net_torch = _MLP_Torch(
+                input_dim=self.state_dim,
+                hidden_dims=[self.hidden_dim] * self.n_hidden_layers,
+                output_dim=self.obs_dim * 2,
+                device=self.device,
+            )
+            self._sync_torch_weights()
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the agent state for serialization.
@@ -1433,29 +1522,26 @@ class ActiveInferenceAgent:
         Handles conversion from torch tensors to numpy when needed,
         and syncs torch models after loading if GPU mode is active.
         """
+        self.history = []
+
         def _to_numpy(v: Any) -> np.ndarray:
             if _TORCH_AVAILABLE and isinstance(v, torch.Tensor):
                 return v.detach().cpu().numpy().astype(np.float64)
             return np.asarray(v, dtype=np.float64)
 
-        self.belief_mu = _to_numpy(state["belief_mu"])
-        self.belief_Sigma = _to_numpy(state["belief_Sigma"])
+        self.belief_mu = _to_numpy(state["belief_mu"]).copy()
+        self.belief_Sigma = _to_numpy(state["belief_Sigma"]).copy()
 
-        trans_params = state["transition_net_params"]
-        obs_params = state["observation_net_params"]
-
-        # Convert torch tensors to numpy if present
-        for params in [trans_params, obs_params]:
-            for k in list(params.keys()):
-                params[k] = _to_numpy(params[k])
+        trans_params = {k: _to_numpy(v).copy() for k, v in state["transition_net_params"].items()}
+        obs_params = {k: _to_numpy(v).copy() for k, v in state["observation_net_params"].items()}
 
         self.transition_net.set_params(trans_params)
         self.observation_net.set_params(obs_params)
 
-        self.preference_mu = _to_numpy(state["preference_mu"])
-        self.preference_Sigma = _to_numpy(state["preference_Sigma"])
-        self._prior_mu = _to_numpy(state["prior_mu"])
-        self._prior_Sigma = _to_numpy(state["prior_Sigma"])
+        self.preference_mu = _to_numpy(state["preference_mu"]).copy()
+        self.preference_Sigma = _to_numpy(state["preference_Sigma"]).copy()
+        self._prior_mu = _to_numpy(state["prior_mu"]).copy()
+        self._prior_Sigma = _to_numpy(state["prior_Sigma"]).copy()
         self.step_count = state["step_count"]
 
         # Sync torch models if using GPU

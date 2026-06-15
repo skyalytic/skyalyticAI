@@ -111,7 +111,14 @@ class NIEATrainer:
         """
         start_time = time.time()
 
-        for episode in range(self.max_episodes):
+        start_episode = 0
+        if self.checkpoint_dir:
+            latest = self._find_latest_checkpoint()
+            if latest is not None:
+                result = self._load_checkpoint(latest)
+                start_episode = result.get("episode", 0) + 1
+
+        for episode in range(start_episode, self.max_episodes):
             episode_result = self._run_episode(episode)
 
             self.episode_rewards.append(episode_result["total_reward"])
@@ -127,6 +134,15 @@ class NIEATrainer:
                 "brain_stage": self.brain.stage,
                 "knowledge_size": len(self.brain.hd_memory.item_memory),
             })
+
+            if len(self.episode_rewards) > 1000:
+                self.episode_rewards = self.episode_rewards[-500:]
+            if len(self.episode_lengths) > 1000:
+                self.episode_lengths = self.episode_lengths[-500:]
+            if len(self.episode_surprises) > 1000:
+                self.episode_surprises = self.episode_surprises[-500:]
+            if len(self.training_log) > 5000:
+                self.training_log = self.training_log[-2500:]
 
             if self.log_interval > 0 and (episode + 1) % self.log_interval == 0:
                 self._log_progress(episode)
@@ -270,6 +286,8 @@ class NIEATrainer:
             "brain_state": self.brain.state_dict(),
             "episode_rewards": self.episode_rewards[-100:],
             "episode_lengths": self.episode_lengths[-100:],
+            "episode_surprises": self.episode_surprises[-100:],
+            "training_log": self.training_log[-500:],
         }
 
         path = os.path.join(
@@ -301,6 +319,22 @@ class NIEATrainer:
             elif isinstance(value, str):
                 out[full_key] = np.array(value)
 
+    def _find_latest_checkpoint(self) -> Optional[str]:
+        """Find the latest checkpoint file in checkpoint_dir by episode number."""
+        import glob
+        import re
+        if not self.checkpoint_dir or not os.path.exists(self.checkpoint_dir):
+            return None
+        pattern = os.path.join(self.checkpoint_dir, "checkpoint_*.pkl")
+        files = glob.glob(pattern)
+        if not files:
+            return None
+        # Sort by episode number extracted from filename
+        def _extract_episode(path: str) -> int:
+            m = re.search(r'checkpoint_ep(\d+)\.pkl', os.path.basename(path))
+            return int(m.group(1)) if m else -1
+        return max(files, key=_extract_episode)
+
     def _load_checkpoint(self, path: str) -> Dict[str, Any]:
         """Load a training checkpoint from a pkl file."""
         import pickle
@@ -315,6 +349,11 @@ class NIEATrainer:
         brain_state = checkpoint.get("brain_state")
         if brain_state is not None:
             self.brain.load_state_dict(brain_state)
+
+        self.episode_rewards = checkpoint.get('episode_rewards', [])
+        self.episode_lengths = checkpoint.get('episode_lengths', [])
+        self.episode_surprises = checkpoint.get('episode_surprises', [])
+        self.training_log = checkpoint.get('training_log', [])
 
         return {"episode": episode, "total_steps": total_steps}
 

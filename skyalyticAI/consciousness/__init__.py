@@ -311,7 +311,7 @@ class GlobalWorkspace:
         return float(np.clip(consciousness, 0.0, 1.0))
 
     def reset(self) -> None:
-        """Reset the global workspace state."""
+        """Reset the global workspace state (runtime only, preserves learned weights)."""
         self.workspace_state = np.zeros(self.workspace_dim, dtype=np.float64)
         self.module_bids = np.zeros(self.n_modules, dtype=np.float64)
         self.module_outputs = [None] * self.n_modules
@@ -319,6 +319,15 @@ class GlobalWorkspace:
         self.is_ignited = False
         self.ignition_history = []
         self._recent_winners = []
+
+    def reset_all(self) -> None:
+        """Reset everything including learned weights (for full brain reset)."""
+        self.reset()
+        self.access_W = [
+            np.random.randn(self.workspace_dim, self.workspace_dim)
+            * np.sqrt(2.0 / (self.workspace_dim + self.workspace_dim))
+            for _ in range(self.n_modules)
+        ]
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the workspace state for serialization."""
@@ -328,6 +337,10 @@ class GlobalWorkspace:
             "competition_threshold": self.competition_threshold,
             "ignition_history": list(self.ignition_history[-100:]),
             "recent_winners": list(self._recent_winners[-100:]),
+            "is_ignited": self.is_ignited,
+            "winner_index": self.winner_index,
+            "module_bids": self.module_bids.copy(),
+            "module_outputs": [out.copy() if out is not None else None for out in self.module_outputs],
         }
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
@@ -343,3 +356,11 @@ class GlobalWorkspace:
             self.ignition_history = list(state["ignition_history"])
         if "recent_winners" in state:
             self._recent_winners = list(state["recent_winners"])
+        if "is_ignited" in state:
+            self.is_ignited = state["is_ignited"]
+        if "winner_index" in state:
+            self.winner_index = state["winner_index"]
+        if "module_bids" in state:
+            self.module_bids = np.array(state["module_bids"], dtype=np.float64)
+        if "module_outputs" in state:
+            self.module_outputs = [out.copy() if out is not None else None for out in state["module_outputs"]]

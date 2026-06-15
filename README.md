@@ -247,6 +247,7 @@ skyalyticAI/
     evolution/                   # 结构自进化
     language/                    # 语言头（文本编码, 语言生成, ASR, OCR）
     perception/                  # 感知编码器（视觉, 听觉, 多模态融合）
+    env/                         # 环境接口（GridWorld, 课程世界, 社会教室）
     society/                     # 社会模拟世界
     npc/                         # AI教师NPC
     training/                    # 训练器（基础训练, 类人成长训练）

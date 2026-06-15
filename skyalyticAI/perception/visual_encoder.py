@@ -293,6 +293,13 @@ class VisualEncoder:
             self.projection_b -= self.learning_rate * error
             return float(np.linalg.norm(error))
 
+        if reconstruction is not None:
+            error = features - reconstruction
+            d_W = np.outer(error, self._last_flat)
+            self.projection_W -= self.learning_rate * d_W
+            self.projection_b -= self.learning_rate * error
+            return float(np.linalg.norm(error))
+
         return 0.0
 
     def state_dict(self) -> Dict[str, Any]:

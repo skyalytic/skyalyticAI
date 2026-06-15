@@ -155,7 +155,7 @@ class HippocampalStore:
             idx = self._size
             self._size += 1
         else:
-            idx = int(np.argmin(self._strengths))
+            idx = int(np.argmin(self._strengths[:self._size]))
             self._keys[idx] = separated_key.copy()
             self._memories[idx] = value.copy()
             self._strengths[idx] = 1.0
@@ -251,7 +251,7 @@ class HippocampalStore:
     def decay_all(self) -> None:
         """Apply time-based decay to all memories."""
         for i in range(self._size):
-            self._strengths[i] -= self.decay_rate
+            self._strengths[i] = max(0.0, self._strengths[i] - self.decay_rate)
             self._ages[i] += 1
 
     @property
@@ -346,8 +346,11 @@ class CorticalStore:
             value = value[:self.dim]
 
         if self._size > 0:
+            # Normalize key for consistent cosine similarity computation
+            key_norm = np.linalg.norm(key)
+            normalized_key = key / key_norm if key_norm > 1e-10 else key
             keys_matrix = np.array(self._keys)
-            similarities = keys_matrix @ key
+            similarities = keys_matrix @ normalized_key
             best_idx = int(np.argmax(similarities))
             best_sim = float(similarities[best_idx])
 
@@ -377,7 +380,7 @@ class CorticalStore:
             norm = np.linalg.norm(key)
             if norm > 1e-10:
                 key = key / norm
-            least_used = int(np.argmin(self._counts))
+            least_used = int(np.argmin(self._counts[:self._size]))
             self._keys[least_used] = key.copy()
             self._values[least_used] = value.copy()
             self._counts[least_used] = 1
@@ -651,6 +654,13 @@ class ComplementaryMemorySystem:
             self.hippocampal._ages = list(state["hippocampal_ages"])
             self.hippocampal._consolidated = list(state.get("hippocampal_consolidated", [False] * len(self.hippocampal._keys)))
             self.hippocampal._size = min(len(self.hippocampal._keys), self.hippocampal.capacity)
+            # Keep the most recent entries (latest memories are more valuable)
+            if len(self.hippocampal._keys) > self.hippocampal._size:
+                self.hippocampal._keys = self.hippocampal._keys[-self.hippocampal._size:]
+                self.hippocampal._memories = self.hippocampal._memories[-self.hippocampal._size:]
+                self.hippocampal._strengths = self.hippocampal._strengths[-self.hippocampal._size:]
+                self.hippocampal._ages = self.hippocampal._ages[-self.hippocampal._size:]
+                self.hippocampal._consolidated = self.hippocampal._consolidated[-self.hippocampal._size:]
             if "hippocampal_separation_matrix" in state:
                 self.hippocampal._separation_matrix = state["hippocampal_separation_matrix"].copy()
         if "cortical_keys" in state:
@@ -658,6 +668,11 @@ class ComplementaryMemorySystem:
             self.cortical._values = [v.copy() for v in state["cortical_values"]]
             self.cortical._counts = list(state["cortical_counts"])
             self.cortical._size = min(len(self.cortical._keys), self.cortical.capacity)
+            # Keep the most recent entries
+            if len(self.cortical._keys) > self.cortical._size:
+                self.cortical._keys = self.cortical._keys[-self.cortical._size:]
+                self.cortical._values = self.cortical._values[-self.cortical._size:]
+                self.cortical._counts = self.cortical._counts[-self.cortical._size:]
         if "consolidation_count" in state:
             self._consolidation_count = state["consolidation_count"]
 
