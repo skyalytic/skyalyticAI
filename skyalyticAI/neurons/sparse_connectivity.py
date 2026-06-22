@@ -73,7 +73,7 @@ class SparseConnectivity:
 
         # 统计信息
         self.n_synapses = self.W.nnz
-        self.sparsity = 1.0 - (self.n_synapses / (n_pre * n_post))
+        self.sparsity = 1.0 - (self.n_synapses / max(self.n_pre * self.n_post, 1))
 
     def _init_sparse_weights(self) -> sparse.csr_matrix:
         """初始化稀疏权重矩阵（CSR格式）"""
@@ -166,7 +166,7 @@ class SparseConnectivity:
             dtype=np.float64,
         )
         self.n_synapses = self.W.nnz
-        self.sparsity = 1.0 - (self.n_synapses / (self.n_pre * self.n_post))
+        self.sparsity = 1.0 - (self.n_synapses / max(self.n_pre * self.n_post, 1))
         return int(pruned_count)
 
     def grow_synapses(self, n_new: int, rng: Optional[np.random.Generator] = None) -> int:
@@ -215,7 +215,7 @@ class SparseConnectivity:
                 dtype=np.float64,
             )
             self.n_synapses = self.W.nnz
-            self.sparsity = 1.0 - (self.n_synapses / (self.n_pre * self.n_post))
+            self.sparsity = 1.0 - (self.n_synapses / max(self.n_pre * self.n_post, 1))
 
         return len(new_rows)
 
@@ -244,11 +244,21 @@ class SparseConnectivity:
             dtype=np.float64,
         )
         self.n_synapses = self.W.nnz
-        self.sparsity = 1.0 - (self.n_synapses / (self.n_pre * self.n_post))
+        self.sparsity = 1.0 - (self.n_synapses / max(self.n_pre * self.n_post, 1))
 
     def get_stats(self) -> Dict[str, Any]:
         """获取连接统计信息"""
         W_coo = self.W.tocoo()
+        if W_coo.data.size == 0:
+            return {
+                "n_pre": self.n_pre,
+                "n_post": self.n_post,
+                "n_synapses": self.n_synapses,
+                "sparsity": self.sparsity,
+                "mean_weight": 0.0,
+                "max_weight": 0.0,
+                "min_weight": 0.0,
+            }
         return {
             "n_pre": self.n_pre,
             "n_post": self.n_post,

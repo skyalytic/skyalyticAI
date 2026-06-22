@@ -55,16 +55,22 @@ class AcceptanceReportBuilder:
         obs = eval_env.reset()
         total = 0
         correct = 0
-        for _ in range(max(10, spec.steps_per_episode)):
-            hidden, _, _ = trainer._perceive_observation(obs)
-            action = trainer.brain.speak(hidden) if trainer.brain.language_head else 0
-            obs, _, done, info = eval_env.step(action)
-            if "correct" in info:
-                total += 1
-                if info["correct"]:
-                    correct += 1
-            if done:
-                break
+        # 评估会调用 perceive，从而更新 Welford 输入归一化统计量；
+        # 保存以便评估后恢复，避免考试数据污染训练分布。
+        norm_state = trainer.brain.save_normalization_state()
+        try:
+            for _ in range(max(10, spec.steps_per_episode)):
+                hidden, _, _ = trainer._perceive_observation(obs)
+                action = trainer.brain.speak(hidden) if trainer.brain.language_head else 0
+                obs, _, done, info = eval_env.step(action)
+                if "correct" in info:
+                    total += 1
+                    if info["correct"]:
+                        correct += 1
+                if done:
+                    break
+        finally:
+            trainer.brain.restore_normalization_state(norm_state)
         return float(correct / max(total, 1))
 
     def evaluate_retention(self, trainer: Any, up_to_stage: str) -> List[RetentionResult]:

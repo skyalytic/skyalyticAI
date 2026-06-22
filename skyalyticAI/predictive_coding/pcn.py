@@ -380,6 +380,10 @@ class PredictiveCodingNetwork:
         # Save initial weights
         saved_W = [layer.W.copy() for layer in self.layers]
         saved_b = [layer.b.copy() for layer in self.layers]
+        # Save runtime state to restore after batch (avoid polluting caller's state)
+        saved_input = self.input_state.copy()
+        saved_errors = [e.copy() if e is not None else None for e in self.prediction_errors]
+        saved_states = [layer.x.copy() for layer in self.layers]
 
         # Accumulate weight changes across the batch
         acc_dW: list = [None] * self.n_layers
@@ -420,6 +424,12 @@ class PredictiveCodingNetwork:
             if acc_dW[l] is not None:
                 dW_arr = acc_dW[l].toarray() if hasattr(acc_dW[l], 'toarray') else acc_dW[l]
                 total_update += float(np.linalg.norm(dW_arr / batch_size))
+
+        # Restore runtime state so subsequent perceive/learn calls are not polluted
+        self.input_state = saved_input
+        self.prediction_errors = saved_errors
+        for l_idx, layer in enumerate(self.layers):
+            layer.x = saved_states[l_idx]
 
         return {
             "total_update": total_update / max(self.n_layers, 1),

@@ -403,7 +403,11 @@ class ActiveInferenceAgent:
             grad_mu = J_obs.T @ obs_grad
 
             prior_residual = self.belief_mu - self._prior_mu
-            grad_mu -= np.linalg.solve(self._prior_Sigma, prior_residual)
+            try:
+                grad_mu -= np.linalg.solve(self._prior_Sigma, prior_residual)
+            except np.linalg.LinAlgError:
+                # _prior_Sigma 奇异时回退到对角近似，避免训练崩溃
+                grad_mu -= prior_residual / (np.diag(self._prior_Sigma) + 1e-8)
 
             grad_norm = np.linalg.norm(grad_mu)
             if grad_norm > 1.0:
@@ -766,7 +770,11 @@ class ActiveInferenceAgent:
             grad_mu = J_obs.T @ obs_grad
 
             prior_residual = belief_t - prior_mu_t
-            grad_mu -= torch.linalg.solve(prior_Sigma_t, prior_residual)
+            try:
+                grad_mu -= torch.linalg.solve(prior_Sigma_t, prior_residual)
+            except RuntimeError:
+                # prior_Sigma 奇异时回退到对角近似，避免训练崩溃
+                grad_mu -= prior_residual / (torch.diagonal(prior_Sigma_t) + 1e-8)
 
             grad_norm = torch.linalg.norm(grad_mu)
             if grad_norm > 1.0:

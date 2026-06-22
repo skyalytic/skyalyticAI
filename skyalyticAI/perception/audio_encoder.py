@@ -66,6 +66,8 @@ class AudioEncoder:
         self.sample_rate = sample_rate
         self.n_mels = n_mels
         self.fft_size = fft_size
+        if hop_length <= 0:
+            raise ValueError(f"hop_length must be positive, got {hop_length}")
         self.hop_length = hop_length
         self.output_dim = output_dim
         self.learning_rate = learning_rate

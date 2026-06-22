@@ -262,7 +262,7 @@ class GPUBatchProcessor:
 
     def batch_fft(
         self, signals: np.ndarray
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Batch FFT using PyTorch when available.
 
@@ -273,8 +273,8 @@ class GPUBatchProcessor:
 
         Returns
         -------
-        np.ndarray
-            Complex FFT output of shape (batch_size, signal_length//2 + 1).
+        Tuple[np.ndarray, np.ndarray]
+            (real_part, imag_part) of the FFT output, shape (batch_size, signal_length//2 + 1).
         """
         if self._use_gpu:
             signals_t = to_tensor(signals, self.device)
@@ -296,7 +296,7 @@ class GPUBatchProcessor:
         logits : np.ndarray
             Input logits of shape (batch_size, n_classes) or (n_classes,).
         temperature : float
-            Softmax temperature.
+            Softmax temperature (must be non-zero).
         axis : int
             Axis along which to compute softmax.
 
@@ -305,13 +305,17 @@ class GPUBatchProcessor:
         np.ndarray
             Softmax probabilities.
         """
+        # 修复：防护 temperature == 0 导致除零
+        if temperature == 0:
+            raise ValueError("temperature must be non-zero")
+        safe_temp = temperature if abs(temperature) > 1e-8 else (1e-8 if temperature > 0 else -1e-8)
         if self._use_gpu:
             logits_t = to_tensor(logits, self.device)
-            result = torch.softmax(logits_t / temperature, dim=axis)
+            result = torch.softmax(logits_t / safe_temp, dim=axis)
             return to_numpy(result)
 
         logits = np.asarray(logits, dtype=np.float64)
-        scaled = logits / temperature
+        scaled = logits / safe_temp
         shifted = scaled - np.max(scaled, axis=axis, keepdims=True)
         exp_vals = np.exp(shifted)
         return exp_vals / np.sum(exp_vals, axis=axis, keepdims=True)

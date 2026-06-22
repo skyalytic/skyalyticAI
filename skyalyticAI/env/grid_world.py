@@ -37,7 +37,7 @@ class GridWorldEnv(Environment):
             raise ValueError("迷宫尺寸至少 3x3")
         self.width = width
         self.height = height
-        self.n_obstacles = min(n_obstacles, (width - 2) * (height - 2) - 2)
+        self.n_obstacles = max(0, min(n_obstacles, (width - 2) * (height - 2)))
         self.max_steps = max_steps
         self.rng = np.random.default_rng(seed)
 

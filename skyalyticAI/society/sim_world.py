@@ -176,8 +176,8 @@ class SocietySimWorld(Environment):
     # ----- 多模态观测 -----
     def _make_visual(self, slot: DaySlot, event: str) -> np.ndarray:
         img = np.zeros((self.image_size, self.image_size), dtype=np.float64)
-        # 用 slot / event hash 生成可重复图样（模拟视觉场景变化）
-        seed_val = (hash(slot.value + event) % 10_000) / 10_000.0
+        # 修复：使用确定性哈希（避免 PYTHONHASHSEED 导致跨进程不可复现）
+        seed_val = (int.from_bytes((slot.value + event).encode("utf-8"), "little") % 10_000) / 10_000.0
         x = int(seed_val * (self.image_size - 1))
         y = int((1.0 - seed_val) * (self.image_size - 1))
         img[max(0, y - 2): min(self.image_size, y + 3), max(0, x - 2): min(self.image_size, x + 3)] = 1.0
@@ -186,9 +186,10 @@ class SocietySimWorld(Environment):
         return img
 
     def _make_audio(self, text: str) -> np.ndarray:
-        # 轻量“语音”模拟：根据文本hash生成多频正弦叠加
+        # 轻量"语音"模拟：根据文本hash生成多频正弦叠加
         t = np.linspace(0, 1.0, self.audio_len, endpoint=False)
-        h = abs(hash(text)) % 1000
+        # 修复：使用确定性哈希
+        h = int.from_bytes(text.encode("utf-8"), "little") % 1000
         f1 = 180 + (h % 200)
         f2 = 320 + (h % 180)
         wave = 0.5 * np.sin(2 * np.pi * f1 * t) + 0.3 * np.sin(2 * np.pi * f2 * t)

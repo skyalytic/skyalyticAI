@@ -345,9 +345,9 @@ class SNNLayer:
 
             if has_tau_s:
                 i_syn = current + (i_syn - current) * tau_s_decay
-                effective_current = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
             else:
-                effective_current = torch.where(in_refractory, torch.zeros_like(current), current)
+                i_syn = current
+            effective_current = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
 
             active = ~in_refractory
 
@@ -370,8 +370,7 @@ class SNNLayer:
 
             refractory = torch.where(spike, torch.tensor(refractory_period, dtype=torch.float32, device=self.device), torch.clamp(refractory - dt, min=0.0))
 
-            i_syn = torch.where(spike, torch.zeros_like(i_syn), i_syn)
-            # Also zero i_syn during refractory period (matches CPU behavior)
+            # Zero i_syn during refractory period only (matches CPU behavior)
             i_syn = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
 
             if is_alif:
@@ -579,8 +578,7 @@ class SNNLayer:
                 torch.clamp(refractory - dt, min=0.0),
             )
 
-            i_syn = torch.where(spike, torch.zeros_like(i_syn), i_syn)
-            # Also zero i_syn during refractory period (matches CPU behavior)
+            # Zero i_syn during refractory period only (matches CPU behavior)
             i_syn = torch.where(in_refractory, torch.zeros_like(i_syn), i_syn)
 
             if is_alif:

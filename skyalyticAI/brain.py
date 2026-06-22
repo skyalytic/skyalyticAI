@@ -723,18 +723,22 @@ class NIEABrain:
         """根据对错反馈学习说话。"""
         if self.language_head is None:
             return {}
-        magnitude = min(abs(reward), 10.0)  # Cap magnitude to prevent extreme updates
-        return self.language_head.learn(hidden_state, target_index, magnitude)
+        capped_reward = max(-10.0, min(10.0, float(reward)))  # Preserve sign, cap magnitude
+        return self.language_head.learn(hidden_state, target_index, capped_reward)
 
     def asr_decode(self, hidden_state: np.ndarray) -> int:
         """ASR 头：从隐藏状态预测下一字符索引。"""
         if self.asr_head is None:
+            if self.language_head is None:
+                return 0
             return self.speak(hidden_state)
         return self.asr_head.sample(hidden_state)
 
     def ocr_decode(self, hidden_state: np.ndarray) -> int:
         """OCR 头：从隐藏状态预测下一字符索引。"""
         if self.ocr_head is None:
+            if self.language_head is None:
+                return 0
             return self.speak(hidden_state)
         return self.ocr_head.sample(hidden_state)
 
@@ -742,16 +746,16 @@ class NIEABrain:
         """ASR 监督学习（字符级）。"""
         if self.asr_head is None:
             return {}
-        magnitude = min(abs(reward), 10.0)
-        out = self.asr_head.learn(hidden_state, target_index, magnitude)
+        capped_reward = max(-10.0, min(10.0, float(reward)))
+        out = self.asr_head.learn(hidden_state, target_index, capped_reward)
         return {"asr_loss": out.get("speech_loss", 0.0), "asr_target_prob": out.get("target_prob", 0.0)}
 
     def learn_ocr(self, hidden_state: np.ndarray, target_index: int, reward: float) -> Dict[str, float]:
         """OCR 监督学习（字符级）。"""
         if self.ocr_head is None:
             return {}
-        magnitude = min(abs(reward), 10.0)
-        out = self.ocr_head.learn(hidden_state, target_index, magnitude)
+        capped_reward = max(-10.0, min(10.0, float(reward)))
+        out = self.ocr_head.learn(hidden_state, target_index, capped_reward)
         return {"ocr_loss": out.get("speech_loss", 0.0), "ocr_target_prob": out.get("target_prob", 0.0)}
 
     def set_school_stage(self, stage: str) -> None:
@@ -823,7 +827,10 @@ class NIEABrain:
                 action = preferred_action
 
         self.global_workspace.submit_bid(0, float(np.mean(np.abs(hidden_state))), hidden_state.copy())
-        pcn_err = self.pcn.prediction_errors[-1] if self.pcn.prediction_errors and self.pcn.prediction_errors[-1] is not None else np.zeros(self.pcn.layer_sizes[-2])
+        # GlobalWorkspace 的 PCN 投标应反映底层感知惊讶（prediction_errors[0]），
+        # 其 shape = layer_sizes[0] = hidden_dim = workspace_dim，维度天然匹配；
+        # 顶层误差（prediction_errors[-1]）shape = action_dim，语义不符且需零填充稀释。
+        pcn_err = self.pcn.prediction_errors[0] if self.pcn.prediction_errors and self.pcn.prediction_errors[0] is not None else np.zeros(self.pcn.layer_sizes[0])
         self.global_workspace.submit_bid(1, float(np.mean(np.abs(pcn_err))), pcn_err[:self.global_workspace.workspace_dim] if pcn_err.shape[0] >= self.global_workspace.workspace_dim else np.pad(pcn_err, (0, max(0, self.global_workspace.workspace_dim - pcn_err.shape[0]))))
         self.global_workspace.submit_bid(2, float(curiosity), np.full(self.global_workspace.workspace_dim, curiosity))
         self.global_workspace.submit_bid(3, float(confidence), np.full(self.global_workspace.workspace_dim, confidence))
@@ -839,7 +846,7 @@ class NIEABrain:
                 elif isinstance(mc, np.ndarray):
                     n = min(mc.shape[0], self.global_workspace.workspace_dim)
                     memory_content[:n] += mc[:n] / max(1, len(memory_context))
-        memory_bid = float(len(memory_context)) / max(1, 3.0) if memory_context else 0.0
+        memory_bid = float(len(memory_context)) / 3.0 if memory_context else 0.0
         self.global_workspace.submit_bid(4, memory_bid, memory_content)
         self.global_workspace.submit_bid(5, float(external_reward), np.full(self.global_workspace.workspace_dim, external_reward))
         # Module 6: World model prediction (distinct from SNN perception)
@@ -863,6 +870,10 @@ class NIEABrain:
                 if broadcast_signal.shape[0] == hidden_state.shape[0]:
                     # Store broadcast for application in next perceive()
                     self._last_broadcast = broadcast_signal.copy()
+                else:
+                    self._last_broadcast = None
+            else:
+                self._last_broadcast = None
         else:
             self._last_broadcast = None
 
@@ -949,8 +960,10 @@ class NIEABrain:
         wm_loss = self.world_model.train_step(obs, action_vec, next_obs, reward=wm_reward)
 
         self.active_inference.learn_transition(hidden_state, action, next_hidden_state)
-        # Use belief_mu as state and hidden_state as observation for non-trivial learning
-        self.active_inference.learn_observation(self.active_inference.belief_mu, hidden_state)
+        # state_dim == obs_dim == hidden_dim：hidden_state 既是真实状态也是观测，
+        # 直接用 hidden_state 作为 state 与 observation 训练观测模型 p(o|s)，
+        # 避免使用被 think() 中 perceive() 更新过的后验 belief_mu 造成信息泄漏。
+        self.active_inference.learn_observation(hidden_state, hidden_state)
 
         surprise = float(np.linalg.norm(prediction_error))
         if surprise > self.surprise_threshold or abs(reward) > 0:
@@ -1161,10 +1174,17 @@ class NIEABrain:
         - state -> reward (what reward was received)
         - state -> surprise (how surprising was this)
         """
-        state_key = "exp_{}".format(self.age)
+        state_key = "exp_{:x}".format(hash(state.tobytes()[:64]) & 0xFFFFFFFF)
         action_key = "act_{}".format(action)
-        next_state_key = "nexp_{}".format(self.age)
-        reward_key = "rew_{:.1f}".format(round(reward, 1))
+        next_state_key = "nexp_{:x}".format(hash(next_state.tobytes()[:64]) & 0xFFFFFFFF)
+        # reward_key 必须与 reward_vec 编码一一对应，避免不同 reward 碰撞到同一概念
+        n_active_reward = max(1, min(int(abs(reward) * 10), self.hd_memory.dim))
+        if reward > 0:
+            reward_key = "rew_p_{}".format(n_active_reward)
+        elif reward < 0:
+            reward_key = "rew_n_{}".format(n_active_reward)
+        else:
+            reward_key = "rew_zero"
         surprise_key = "sur_{}".format(min(int(surprise * 10), 9))
 
         if state_key not in self.hd_memory.item_memory:
@@ -1191,11 +1211,10 @@ class NIEABrain:
         if reward_key not in self.hd_memory.item_memory:
             reward_vec = np.zeros(self.hd_memory.dim, dtype=np.float64)
             # Use multiple dimensions to encode reward magnitude
-            n_active = max(1, min(int(abs(reward) * 10), self.hd_memory.dim))
             if reward > 0:
-                reward_vec[:n_active] = 1.0
+                reward_vec[:n_active_reward] = 1.0
             elif reward < 0:
-                reward_vec[:n_active] = -1.0
+                reward_vec[:n_active_reward] = -1.0
             else:
                 # Zero reward: use a single fixed position as neutral marker
                 reward_vec[self.hd_memory.dim // 2] = 1.0
@@ -1365,6 +1384,22 @@ class NIEABrain:
         self.stdp_layer.reset()
         self.active_inference.reset()
         self.metacognition.reset()
+
+    def save_normalization_state(self) -> Dict[str, Any]:
+        """保存 Welford 输入归一化统计量，供评估前后恢复，避免考试数据污染训练分布。"""
+        return {
+            "mean": self._input_running_mean.copy(),
+            "M2": self._input_running_M2.copy(),
+            "count": self._input_running_count,
+            "std": self._input_running_std.copy(),
+        }
+
+    def restore_normalization_state(self, state: Dict[str, Any]) -> None:
+        """恢复 Welford 输入归一化统计量。"""
+        self._input_running_mean = state["mean"].copy()
+        self._input_running_M2 = state["M2"].copy()
+        self._input_running_count = state["count"]
+        self._input_running_std = state["std"].copy()
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the brain state for serialization."""

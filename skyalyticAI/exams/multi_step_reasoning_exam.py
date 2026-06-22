@@ -120,6 +120,7 @@ class MultiStepReasoningExam(Environment):
         reward = 1.2 if ok else -0.2
         self._chain_ctx.append(self._step_indices[self._pos] if self._pos < len(self._step_indices) else 0)
         self._pos += 1
+        completed_step = self._step_idx  # 修复：先保存当前步骤索引，避免被后续自增/重置影响
         step_done = self._pos >= len(self._step_indices)
         if step_done:
             self._step_idx += 1
@@ -139,7 +140,7 @@ class MultiStepReasoningExam(Environment):
             "correct": ok,
             "target_char": self.corpus.index_to_char(target),
             "accuracy": self.accuracy(),
-            "reasoning_step": self._step_idx,
+            "reasoning_step": completed_step,  # 修复：使用保存的当前步骤索引
             "passed": self.passed() if done else False,
         }
 

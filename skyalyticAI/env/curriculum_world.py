@@ -243,7 +243,8 @@ class HumanGrowthWorld(Environment):
         return self._reading_obs()
 
     def _reading_obs(self) -> np.ndarray:
-        context = self._text_indices[:self._text_pos]
+        # 修复：上下文包含当前位置字符，使智能体看到 0.._text_pos 来预测 _text_pos+1
+        context = self._text_indices[:self._text_pos + 1]
         obs = self.text_encoder.encode(context)
         if obs.shape[0] < self.observation_dim:
             pad = np.zeros(self.observation_dim, dtype=np.float64)

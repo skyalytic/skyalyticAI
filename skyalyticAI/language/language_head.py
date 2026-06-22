@@ -88,9 +88,9 @@ class LanguageHead:
         p = self.probs(h)
         target = np.zeros(self.vocab_size, dtype=np.float64)
         target[target_index] = 1.0
-        # Always move toward target; magnitude proportional to |reward|
-        # (target_index is the correct answer regardless of reward sign)
-        scale = self.learning_rate * abs(float(reward)) / self.temperature
+        # 正奖励强化目标token (err=target-p方向)，负奖励惩罚目标token (远离target方向)
+        # 让梯度方向自然翻转，符合奖励信号语义
+        scale = self.learning_rate * float(reward) / self.temperature
         err = target - p
         self.W += scale * np.outer(err, h)
         self.b += scale * err

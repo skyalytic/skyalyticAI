@@ -155,10 +155,10 @@ class NIEADataLoader:
             values = [s[key] for s in samples]
             if isinstance(values[0], np.ndarray):
                 batch[key] = np.stack(values, axis=0)
+            elif isinstance(values[0], bool):  # 修复：bool 必须在 int/float 之前检查（bool 是 int 的子类）
+                batch[key] = np.array(values, dtype=bool)
             elif isinstance(values[0], (int, float)):
                 batch[key] = np.array(values, dtype=np.float64)
-            elif isinstance(values[0], bool):
-                batch[key] = np.array(values, dtype=bool)
             else:
                 batch[key] = values
 

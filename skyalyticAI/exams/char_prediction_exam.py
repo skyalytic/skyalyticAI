@@ -110,7 +110,11 @@ class CharPredictionExam(Environment):
         return self.accuracy() >= self.pass_accuracy
 
     def _obs(self) -> np.ndarray:
-        obs = self.text_encoder.encode(self._context)
+        # 修复：上下文包含当前位置字符，使智能体看到 0.._pos 来预测 _pos+1
+        context = list(self._context)
+        if self._pos < len(self._indices):
+            context.append(self._indices[self._pos])
+        obs = self.text_encoder.encode(context)
         if obs.shape[0] < self.observation_dim:
             pad = np.zeros(self.observation_dim, dtype=np.float64)
             pad[: obs.shape[0]] = obs

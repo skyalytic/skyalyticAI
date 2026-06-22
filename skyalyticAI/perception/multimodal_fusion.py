@@ -130,7 +130,8 @@ class MultimodalFusion:
                 # Reliability: higher variance carries more information
                 var = np.var(feat)
                 reliability = var / (1.0 + var)  # [0, 1), monotonic in variance
-                normalized_error = prediction_error / (1.0 + prediction_error)
+                safe_error = max(0.0, float(prediction_error))  # 修复：防止负值导致除零
+                normalized_error = safe_error / (1.0 + safe_error)
                 # High error → decrease attention; low error → increase
                 update = self.learning_rate * reliability * (1.0 - 2.0 * normalized_error)
                 self.attention_W[i] += update

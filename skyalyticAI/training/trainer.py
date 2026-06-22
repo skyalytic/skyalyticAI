@@ -159,7 +159,7 @@ class NIEATrainer:
             "total_episodes": len(self.episode_rewards),
             "total_steps": self.total_steps,
             "elapsed_seconds": elapsed,
-            "final_avg_reward": np.mean(self.episode_rewards[-self.early_stop_window:]),
+            "final_avg_reward": float(np.mean(self.episode_rewards[-self.early_stop_window:])) if self.episode_rewards else 0.0,
             "best_reward": max(self.episode_rewards) if self.episode_rewards else 0.0,
             "brain_age": self.brain.age,
             "brain_stage": self.brain.stage,
@@ -454,24 +454,30 @@ class NIEATrainer:
         rewards = []
         steps_list = []
 
-        for _ in range(n_episodes):
-            obs = self.env.reset()
-            self.brain.reset_episode()
-            total_reward = 0.0
-            steps = 0
+        # 评估会调用 perceive，从而更新 Welford 输入归一化统计量；
+        # 保存以便评估后恢复，避免考试/评估数据污染训练分布。
+        norm_state = self.brain.save_normalization_state()
+        try:
+            for _ in range(n_episodes):
+                obs = self.env.reset()
+                self.brain.reset_episode()
+                total_reward = 0.0
+                steps = 0
 
-            for step in range(self.max_steps_per_episode):
-                hidden, _, _ = self._perceive_observation(obs)
-                thought = self.brain.think(hidden)
-                action = thought["action"]
-                obs, reward, done, _ = self.env.step(action)
-                total_reward += reward
-                steps += 1
-                if done:
-                    break
+                for step in range(self.max_steps_per_episode):
+                    hidden, _, _ = self._perceive_observation(obs)
+                    thought = self.brain.think(hidden)
+                    action = thought["action"]
+                    obs, reward, done, _ = self.env.step(action)
+                    total_reward += reward
+                    steps += 1
+                    if done:
+                        break
 
-            rewards.append(total_reward)
-            steps_list.append(steps)
+                rewards.append(total_reward)
+                steps_list.append(steps)
+        finally:
+            self.brain.restore_normalization_state(norm_state)
 
         return {
             "avg_reward": np.mean(rewards),

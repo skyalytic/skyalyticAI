@@ -1,4 +1,4 @@
-﻿"""
+"""
 类人成长训练器 — 0~3 岁感知运动 + 上学多科 + 升学考试。
 """
 
@@ -115,9 +115,10 @@ class HumanGrowthTrainer(NIEATrainer):
             # ASR/OCR 任务头联合训练与指标统计（多模态世界会提供 target_text）
             if info.get("mode") == "society":
                 target_text = str(info.get("target_text", "") or "")
-                if target_text:
+                target_char = str(info.get("target_char", "") or "")
+                if target_text and target_char:
                     # 使用当前目标字符做逐字符监督
-                    tid = self.human_env.corpus.char_to_index(info.get("target_char", ""))
+                    tid = self.human_env.corpus.char_to_index(target_char)
                     rew = 1.0 if info.get("correct") else -1.0
                     self.brain.learn_asr(hidden, tid, rew)
                     self.brain.learn_ocr(hidden, tid, rew)
@@ -125,10 +126,10 @@ class HumanGrowthTrainer(NIEATrainer):
                     # 以单字符预测构造轻量 CER/WER 统计
                     pred_asr = self.human_env.corpus.index_to_char(self.brain.asr_decode(hidden))
                     pred_ocr = self.human_env.corpus.index_to_char(self.brain.ocr_decode(hidden))
-                    self._asr_cer_hist.append(cer(pred_asr, info.get("target_char", "")))
-                    self._ocr_cer_hist.append(cer(pred_ocr, info.get("target_char", "")))
-                    self._asr_wer_hist.append(wer(pred_asr, info.get("target_char", "")))
-                    self._ocr_wer_hist.append(wer(pred_ocr, info.get("target_char", "")))
+                    self._asr_cer_hist.append(cer(pred_asr, target_char))
+                    self._ocr_cer_hist.append(cer(pred_ocr, target_char))
+                    self._asr_wer_hist.append(wer(pred_asr, target_char))
+                    self._ocr_wer_hist.append(wer(pred_ocr, target_char))
 
             intrinsic_reward = 0.0
             if self.reward_shaping:
@@ -153,6 +154,7 @@ class HumanGrowthTrainer(NIEATrainer):
             if self.human_env.school_stage != old_stage:
                 new_stage = self.human_env.school_stage
                 retention = self._report_builder.evaluate_retention(self, old_stage)
+                self.brain._saved_pcn_state = None  # 清除被考试 perceive 污染的保存状态
                 if self._report_builder.should_rollback_promotion(retention):
                     # 遗忘超阈值：回滚升级
                     self.human_env.set_stage(old_stage)
@@ -172,6 +174,9 @@ class HumanGrowthTrainer(NIEATrainer):
 
         if (episode + 1) % self._retention_eval_interval == 0:
             self._report_builder.evaluate_retention(self, self.human_env.school_stage)
+            # 周期性考试同样会污染 PCN 保存状态与隐状态，需清理
+            self.brain._saved_pcn_state = None
+            self.brain.pcn.reset()
 
         return {
             "total_reward": total_reward,
