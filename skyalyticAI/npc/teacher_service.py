@@ -5,13 +5,18 @@
 - OpenAI 兼容 Chat Completions 接口（可对接云 API / 本地 LM Studio / 其它兼容网关）
 
 通过环境变量配置：
-- NIEA_TEACHER_API_BASE: 例如 http://localhost:1234/v1
+- NIEA_TEACHER_API_BASE: 例如 http://localhost:1234/v1 或 https://api.deepseek.com
 - NIEA_TEACHER_API_KEY: 例如 sk-xxx（本地服务可留空）
 - NIEA_TEACHER_MODEL: 例如 gpt-4o-mini / qwen2.5 / llama3.1 等
+- NIEA_TEACHER_API_PATH: 默认 /chat/completions，一般无需修改
+- NIEA_TEACHER_AUTO_VERSION: 默认 "1"，当 API_BASE 未含版本路径时自动补 /v1
+  设为 "0" 可禁用自动补全（适用于自定义网关或非标准路径）
 
 说明：
 - 该模块只负责“生成老师话语/题干/答案”，不引入新依赖
 - 若未配置或请求失败，调用方应回退到规则生成
+- 自动补全规则：仅当 URL 路径部分为空或仅为 "/" 时，追加 "/v1"；
+  若用户已填写 /v1 /v2 /v4 等版本路径，则保持原样不改动
 """
 
 from __future__ import annotations
@@ -20,9 +25,37 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+
+def _normalize_api_base(api_base: str, auto_version: bool = True) -> str:
+    """规范化 API base URL。
+
+    通用规则（不硬编码任何服务商）：
+    - 若 URL 路径为空或仅为 "/"，且 auto_version=True，则追加 "/v1"
+    - 若 URL 已包含任何路径（如 /v1 /v2 /v4 /openai/v1），保持原样
+    - 去除末尾多余的 "/"
+
+    示例:
+      https://api.deepseek.com        -> https://api.deepseek.com/v1
+      https://api.deepseek.com/v4     -> https://api.deepseek.com/v4  (保持)
+      https://api.openai.com          -> https://api.openai.com/v1
+      https://api.openai.com/v1       -> https://api.openai.com/v1    (保持)
+      http://localhost:1234           -> http://localhost:1234/v1
+      http://localhost:1234/v1        -> http://localhost:1234/v1     (保持)
+    """
+    base = api_base.rstrip("/")
+    if not auto_version:
+        return base
+    parsed = urllib.parse.urlparse(base)
+    path = parsed.path.strip("/")
+    if not path:
+        # 路径为空，自动补 /v1
+        return base + "/v1"
+    return base
 
 
 @dataclass
@@ -48,10 +81,9 @@ class TeacherService:
             return None
         api_key = os.environ.get("NIEA_TEACHER_API_KEY", "").strip()
         api_path = os.environ.get("NIEA_TEACHER_API_PATH", "").strip() or "/chat/completions"
-        # 兼容用户只填 https://api.deepseek.com （自动补 /v1）
-        if api_base.rstrip("/").endswith("api.deepseek.com"):
-            if not api_base.rstrip("/").endswith("/v1"):
-                api_base = api_base.rstrip("/") + "/v1"
+        # 通用自动补全：仅当 URL 无路径时补 /v1，已含 /v1 /v2 /v4 等则保持原样
+        auto_version = os.environ.get("NIEA_TEACHER_AUTO_VERSION", "1").strip() not in ("0", "false", "False", "no", "No")
+        api_base = _normalize_api_base(api_base, auto_version=auto_version)
         return TeacherService(
             TeacherServiceConfig(
                 api_base=api_base,
