@@ -123,7 +123,39 @@ class SNNLayer:
             and str(device) == "cuda"
         )
 
+        # GPU 权重缓存：避免每次前向传播都重新上传 W（100MB+）到 GPU
+        self._gpu_W_t: Any = None
+        self._gpu_bias_t: Any = None
+        self._gpu_W_version: int = -1
+        self._gpu_bias_version: int = -1
+
         self._init_neuron_state()
+
+    def _get_gpu_weights(self) -> Tuple[Any, Any]:
+        """获取缓存的 GPU 权重张量，仅在权重变更时重新上传。
+
+        self.W 是 numpy 数组，其版本号通过 self._W_version 跟踪。
+        当 STDP 等学习规则修改 W 后，需调用 _invalidate_gpu_cache()。
+        """
+        w_version = id(self.W)  # 用 id 检测引用是否变化
+        if self._gpu_W_t is None or w_version != self._gpu_W_version:
+            self._gpu_W_t = torch.from_numpy(self.W).float().to(self.device)
+            self._gpu_W_version = w_version
+        if self.bias is not None:
+            b_version = id(self.bias)
+            if self._gpu_bias_t is None or b_version != self._gpu_bias_version:
+                self._gpu_bias_t = torch.from_numpy(self.bias).float().to(self.device)
+                self._gpu_bias_version = b_version
+        else:
+            self._gpu_bias_t = None
+        return self._gpu_W_t, self._gpu_bias_t
+
+    def _invalidate_gpu_cache(self) -> None:
+        """使 GPU 权重缓存失效（权重被学习规则修改后调用）。"""
+        self._gpu_W_t = None
+        self._gpu_bias_t = None
+        self._gpu_W_version = -1
+        self._gpu_bias_version = -1
 
     def _init_neuron_state(self) -> None:
         """Initialize vectorized neuron state arrays for GPU forward pass."""
@@ -296,13 +328,9 @@ class SNNLayer:
 
         self._sync_from_neurons()
 
-        W_t = torch.from_numpy(self.W).float().to(self.device)
+        # 使用缓存的 GPU 权重（避免每次重新上传 100MB+ 矩阵）
+        W_t, bias_t = self._get_gpu_weights()
         spike_t = torch.from_numpy(spike_train).float().to(self.device)
-        bias_t = (
-            torch.from_numpy(self.bias).float().to(self.device)
-            if self.bias is not None
-            else None
-        )
 
         v = torch.from_numpy(self._v).float().to(self.device)
         v_rest = n0.v_rest

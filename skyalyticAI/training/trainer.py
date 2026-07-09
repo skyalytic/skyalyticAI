@@ -181,6 +181,8 @@ class NIEATrainer:
         dict
             Episode metrics.
         """
+        import time as _time
+
         obs = self.env.reset()
         self.brain.reset_episode()
 
@@ -188,6 +190,8 @@ class NIEATrainer:
         total_surprise = 0.0
         steps = 0
         prev_env_reward = 0.0
+        episode_start_time = _time.time()
+        step_log_interval = max(1, self.max_steps_per_episode // 10)
 
         for step in range(self.max_steps_per_episode):
             hidden, prediction, prediction_error = self._perceive_observation(obs)
@@ -219,6 +223,18 @@ class NIEATrainer:
             self.total_steps += 1
 
             obs = next_obs
+
+            # 步级进度输出：每 10% 打印一次，让用户看到训练在推进
+            if step > 0 and (step + 1) % step_log_interval == 0:
+                elapsed = _time.time() - episode_start_time
+                speed = (step + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (self.max_steps_per_episode - step - 1) / speed if speed > 0 else 0.0
+                print(
+                    f"  [Ep {episode + 1}] 步 {step + 1}/{self.max_steps_per_episode} "
+                    f"| reward={total_reward:.2f} | {speed:.1f}步/秒 | "
+                    f"剩余{eta:.0f}秒",
+                    flush=True,
+                )
 
             if done:
                 break

@@ -1084,6 +1084,9 @@ class NIEABrain:
             snn_layer.W = W
             if b is not None:
                 snn_layer.bias = b
+            # 权重已变更，使 GPU 缓存失效
+            if hasattr(snn_layer, '_invalidate_gpu_cache'):
+                snn_layer._invalidate_gpu_cache()
             # 同步稀疏连接矩阵
             if snn_layer._sparse_conn is not None:
                 snn_layer._sparse_conn.W = W.copy()

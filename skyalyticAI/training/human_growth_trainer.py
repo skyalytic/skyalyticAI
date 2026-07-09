@@ -56,6 +56,8 @@ class HumanGrowthTrainer(NIEATrainer):
         return out
 
     def _run_episode(self, episode: int) -> Dict[str, Any]:
+        import time as _time
+
         self.human_env.set_rolling_speech_accuracy(self._rolling_speech_accuracy())
         self.human_env.set_rolling_subject_accuracy(self._rolling_subject_accuracy())
         max_steps = self.human_env.get_steps_per_episode()
@@ -71,6 +73,8 @@ class HumanGrowthTrainer(NIEATrainer):
         speech_correct = 0
         speech_n = 0
         old_stage = self.human_env.school_stage
+        episode_start_time = _time.time()
+        step_log_interval = max(1, max_steps // 10)
 
         for step in range(max_steps):
             hidden, prediction, prediction_error = self._perceive_observation(obs)
@@ -169,6 +173,19 @@ class HumanGrowthTrainer(NIEATrainer):
             steps += 1
             self.total_steps += 1
             obs = next_obs
+
+            # 步级进度输出：每 10% 打印一次
+            if step > 0 and (step + 1) % step_log_interval == 0:
+                elapsed = _time.time() - episode_start_time
+                speed = (step + 1) / elapsed if elapsed > 0 else 0.0
+                eta = (max_steps - step - 1) / speed if speed > 0 else 0.0
+                print(
+                    f"  [Ep {episode + 1}] 步 {step + 1}/{max_steps} "
+                    f"| reward={total_reward:.2f} | {speed:.1f}步/秒 | "
+                    f"剩余{eta:.0f}秒",
+                    flush=True,
+                )
+
             if done:
                 break
 
