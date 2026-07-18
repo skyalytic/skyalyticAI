@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 一键训练启动器（可续训/可重头/可选成长线）。
@@ -35,8 +35,9 @@ def _latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
     if not ckpt_dir.is_dir():
         return None
     best: Optional[Tuple[int, Path]] = None
-    for p in ckpt_dir.glob("checkpoint_ep*.npz"):
-        m = re.search(r"checkpoint_ep(\d+)\.npz$", p.name)
+    # 同时支持 .pkl 和 .npz 两种存档格式
+    for p in ckpt_dir.glob("checkpoint_ep*"):
+        m = re.search(r"checkpoint_ep(\d+)\.(?:pkl|npz)$", p.name)
         if not m:
             continue
         ep = int(m.group(1))
