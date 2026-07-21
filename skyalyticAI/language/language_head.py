@@ -88,9 +88,12 @@ class LanguageHead:
         p = self.probs(h)
         target = np.zeros(self.vocab_size, dtype=np.float64)
         target[target_index] = 1.0
-        # 正奖励强化目标token (err=target-p方向)，负奖励惩罚目标token (远离target方向)
-        # 让梯度方向自然翻转，符合奖励信号语义
-        scale = self.learning_rate * float(reward) / self.temperature
+        # 教师强制：方向恒为 (target - p)，即始终朝正确答案学习。
+        # 奖励只调制步长幅度（答对大步、答错小步），不参与方向。
+        # 若让 reward 符号翻转方向，稀疏奖励下（词表数百、随机命中率~1/vocab）
+        # 99%以上的步会把权重推离正确答案，系统在 p(target)≈0 处形成稳定不动点，
+        # 数学上无法自举（见 理论.md fix 118）。
+        scale = self.learning_rate * abs(float(reward)) / self.temperature
         err = target - p
         self.W += scale * np.outer(err, h)
         self.b += scale * err
