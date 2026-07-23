@@ -171,8 +171,8 @@ def main() -> None:
 
     if mode == "society":
         from skyalyticAI.society.sim_world import SocietySimWorld
-        from skyalyticAI.perception.visual_encoder import VisualEncoder
-        from skyalyticAI.perception.audio_encoder import AudioEncoder
+        from skyalyticAI.perception.retina_encoder import RetinaEncoder
+        from skyalyticAI.perception.cochlea_encoder import CochleaEncoder
         from skyalyticAI.perception.multimodal_fusion import MultimodalFusion
 
         env = SocietySimWorld(
@@ -183,15 +183,20 @@ def main() -> None:
             student_name="小析",
             seed=42,
         )
-        visual_encoder = VisualEncoder(
-            image_height=28,
-            image_width=28,
-            n_channels=1,
+        # fix 119 生物前端：视网膜/耳蜗脉冲编码（无预训练、前端不学习，学习在皮层）
+        visual_encoder = RetinaEncoder(
+            ganglion_rows=16,
+            ganglion_cols=16,
+            spike_steps=20,
             output_dim=128,
+            seed=42,
         )
-        audio_encoder = AudioEncoder(
+        audio_encoder = CochleaEncoder(
+            n_fibers=64,
             sample_rate=16000,
+            spike_steps=20,
             output_dim=128,
+            seed=42,
         )
         fusion = MultimodalFusion(
             modality_dims={"visual": 128, "audio": 128},

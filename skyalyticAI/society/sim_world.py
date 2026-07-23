@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -22,6 +23,7 @@ from skyalyticAI.env.environment import Environment
 from skyalyticAI.env.curriculum_world import Activity
 from skyalyticAI.language.text_encoder import TextEncoder
 from skyalyticAI.npc.teacher_npc import TeacherNPC
+from skyalyticAI.society.speech_synth import SpeechSynthesizer
 
 
 class DaySlot(str, Enum):
@@ -59,7 +61,9 @@ class SocietySimWorld(Environment):
         max_stage: str = "undergraduate",
         student_name: str = "小析",
         image_size: int = 28,
-        audio_len: int = 16000,
+        audio_len: int = 96000,
+        assets_dir: Optional[str] = "assets",
+        real_perception: bool = True,
         seed: Optional[int] = None,
     ) -> None:
         self.rng = np.random.default_rng(seed)
@@ -91,6 +95,19 @@ class SocietySimWorld(Environment):
 
         # 兼容 HumanGrowthTrainer 的 _activity 属性
         self._activity: Optional[Any] = None
+
+        # fix 119 教师强制开关：训练时上下文回喂目标字（听正确示范），
+        # 评估时置 False 回喂模型自己的输出
+        self.teacher_forcing = True
+
+        # fix 119 真实感知资产：assets/images/ 放真实照片（{slot}_{event}.jpg 等命名），
+        # TTS 真实语音缓存在 assets/audio/tts_cache/
+        self.assets_dir = assets_dir
+        self.real_perception = real_perception
+        self.speech_synth: Optional[SpeechSynthesizer] = None
+        if real_perception:
+            cache = str(Path(assets_dir) / "audio" / "tts_cache") if assets_dir else "assets/audio/tts_cache"
+            self.speech_synth = SpeechSynthesizer(cache_dir=cache)
 
     def _init_relationships(self) -> None:
         for p in self.teacher.personas:
@@ -174,7 +191,76 @@ class SocietySimWorld(Environment):
         return "我会完成作业并订正错题"
 
     # ----- 多模态观测 -----
+    def _load_visual_asset(self, slot: DaySlot, event: str) -> Optional[np.ndarray]:
+        """真实照片优先：assets/images/{slot}_{event}.* -> {slot}.* -> default.*。"""
+        if not self.real_perception or not self.assets_dir:
+            return None
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+        img_dir = Path(self.assets_dir) / "images"
+        if not img_dir.is_dir():
+            return None
+        for stem in (f"{slot.value}_{event}", slot.value, "default"):
+            for ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp"):
+                path = img_dir / f"{stem}{ext}"
+                if path.is_file():
+                    try:
+                        with Image.open(path) as im:
+                            return np.asarray(im.convert("RGB"), dtype=np.float64) / 255.0
+                    except Exception:
+                        continue
+        return None
+
+    def _render_scene_card(self, slot: DaySlot, event: str) -> Optional[np.ndarray]:
+        """无真实照片时的结构化场景卡：PIL 渲染的真实光学图像（含边缘/区域/颜色结构，非哈希点）。"""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            return None
+        try:
+            size = 224
+            palette = {
+                DaySlot.MORNING_HOME: ((255, 214, 170), (120, 85, 60)),
+                DaySlot.SCHOOL_CLASS: ((180, 220, 255), (70, 110, 160)),
+                DaySlot.SCHOOL_BREAK: ((200, 240, 200), (60, 120, 70)),
+                DaySlot.AFTERNOON_ACTIVITY: ((255, 200, 120), (160, 90, 40)),
+                DaySlot.EVENING_STUDY: ((150, 160, 210), (50, 55, 90)),
+                DaySlot.NIGHT_REFLECTION: ((40, 50, 90), (15, 20, 40)),
+            }
+            sky, ground = palette.get(slot, ((200, 200, 200), (100, 100, 100)))
+            img = Image.new("RGB", (size, size), sky)
+            draw = ImageDraw.Draw(img)
+            horizon = int(size * 0.7)
+            for y in range(horizon):  # 天空竖直渐变
+                t = y / max(horizon, 1)
+                c = tuple(int(sky[i] * (0.7 + 0.3 * t)) for i in range(3))
+                draw.line([(0, y), (size, y)], fill=c)
+            draw.rectangle([0, horizon, size, size], fill=ground)
+            # 事件相关的确定性几何主体（真实边缘与区域结构）
+            h = int.from_bytes((slot.value + event).encode("utf-8"), "little")
+            cx, cy = 40 + h % (size - 80), 60 + (h // 7) % max(size // 2, 1)
+            r = 18 + (h // 13) % 26
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 250, 230), outline=(60, 60, 60), width=2)
+            bx, bw, bh = 30 + (h // 3) % 120, 50 + (h // 5) % 60, 30 + (h // 11) % 50
+            draw.rectangle([bx, horizon - bh, bx + bw, horizon], fill=(120, 80, 50), outline=(40, 25, 15), width=2)
+            for i in range(3):
+                x0 = (h // (17 * (i + 1))) % (size - 20) + 10
+                hh = 15 + (h // (23 + i)) % 35
+                draw.rectangle([x0, horizon - hh, x0 + 8, horizon], fill=(50, 90 + (h >> i) % 80, 50))
+            return np.asarray(img, dtype=np.float64) / 255.0
+        except Exception:
+            return None
+
     def _make_visual(self, slot: DaySlot, event: str) -> np.ndarray:
+        # fix 119 真实感知优先：真实照片 > 结构化场景卡 > 旧哈希点阵（最后兜底）
+        real = self._load_visual_asset(slot, event)
+        if real is not None:
+            return real
+        card = self._render_scene_card(slot, event)
+        if card is not None:
+            return card
         img = np.zeros((self.image_size, self.image_size), dtype=np.float64)
         # 修复：使用确定性哈希（避免 PYTHONHASHSEED 导致跨进程不可复现）
         seed_val = (int.from_bytes((slot.value + event).encode("utf-8"), "little") % 10_000) / 10_000.0
@@ -186,6 +272,22 @@ class SocietySimWorld(Environment):
         return img
 
     def _make_audio(self, text: str) -> np.ndarray:
+        # fix 119 真实语音优先：TTS 真实人声波形 > 旧哈希正弦（最后兜底）
+        if self.speech_synth is not None:
+            out = self.speech_synth.synthesize(text)
+            if out is not None:
+                wave, sr = out
+                if sr != 16000 and wave.shape[0] > 0:  # 统一到16k，与耳蜗编码器工作采样率一致
+                    duration = wave.shape[0] / float(sr)
+                    n = max(1, int(duration * 16000))
+                    wave = np.interp(
+                        np.linspace(0.0, duration, n, endpoint=False),
+                        np.linspace(0.0, duration, wave.shape[0], endpoint=False),
+                        wave,
+                    )
+                if wave.shape[0] >= self.audio_len:
+                    return wave[: self.audio_len]
+                return np.pad(wave, (0, self.audio_len - wave.shape[0]))
         # 轻量"语音"模拟：根据文本hash生成多频正弦叠加
         t = np.linspace(0, 1.0, self.audio_len, endpoint=False)
         # 修复：使用确定性哈希
@@ -210,8 +312,17 @@ class SocietySimWorld(Environment):
         self._episodes_since_exam += 1
         self._spec = get_quality_spec(self.school_stage)
         self._activity = Activity.READING  # 社会课堂始终为阅读模式，启用语言头
-        slot = self._pick_slot()
-        subject = self._pick_subject(slot)
+        # fix 119 课程阶梯：感知运动期只练单一模板（先学说一句话），
+        # 幼儿园固定课堂场景、开放全部科目模板，小学起开放全部场景模板。
+        if self.school_stage == "sensorimotor":
+            slot = DaySlot.SCHOOL_CLASS
+            subject = "数学"
+        elif self.school_stage == "kindergarten":
+            slot = DaySlot.SCHOOL_CLASS
+            subject = self._pick_subject(slot)
+        else:
+            slot = self._pick_slot()
+            subject = self._pick_subject(slot)
         self._current_subject = subject
         event = self._pick_event(slot)
         prompt, actor_role, actor_style = self._build_prompt(slot, subject, event)
@@ -250,7 +361,10 @@ class SocietySimWorld(Environment):
             self._state.correct += 1
         self._state.pos += 1
         self._steps_in_stage += 1
-        self._ctx_indices.append(action)
+        # fix 119 教师强制回喂：训练时把目标字（正确示范）追加进上下文，
+        # 而非模型自己说错的字——等价于婴儿听大人的正确发音，而非只听自己的咿呀。
+        feedback_char = target if self.teacher_forcing else action
+        self._ctx_indices.append(feedback_char)
         if len(self._ctx_indices) > 1000:
             self._ctx_indices = self._ctx_indices[-500:]
 

@@ -172,8 +172,8 @@ $env:NIEA_TEACHER_MODEL = "deepseek-v4-flash"
 | synapses_per_neuron | int | 7000 | 每神经元突触数（稀疏模式） |
 | brain_scale | str/bool | False | 预设方案：small/medium/large/xlarge/human/True/False |
 | language_vocab_size | int | None | 语言头词表大小（同时创建ASR/OCR头） |
-| visual_encoder | VisualEncoder | None | 自定义视觉编码器实例 |
-| audio_encoder | AudioEncoder | None | 自定义听觉编码器实例 |
+| visual_encoder | VisualEncoder/RetinaEncoder | None | 自定义视觉编码器实例（推荐RetinaEncoder：生物可解释视网膜前端，无预训练、不学习） |
+| audio_encoder | AudioEncoder/CochleaEncoder | None | 自定义听觉编码器实例（推荐CochleaEncoder：生物可解释耳蜗前端，无预训练、不学习） |
 | multimodal_fusion | MultimodalFusion | None | 自定义多模态融合实例 |
 | device | str | None | 计算设备（cuda/cpu） |
 
@@ -246,7 +246,7 @@ skyalyticAI/
     consciousness/               # 全局工作空间（意识涌现）
     evolution/                   # 结构自进化
     language/                    # 语言头（文本编码, 语言生成, ASR, OCR）
-    perception/                  # 感知编码器（视觉, 听觉, 多模态融合）
+    perception/                  # 感知编码器（视网膜/耳蜗生物前端, 视觉, 听觉, 多模态融合）
     env/                         # 环境接口（GridWorld, 课程世界, 社会教室）
     society/                     # 社会模拟世界
     npc/                         # AI教师NPC
