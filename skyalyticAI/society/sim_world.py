@@ -174,6 +174,8 @@ class SocietySimWorld(Environment):
         return prompt, actor_role, actor_style
 
     def _target_answer(self, slot: DaySlot, subject: str, event: str) -> str:
+        if subject == "说话":
+            return "我会跟着老师学说话"
         if slot == DaySlot.SCHOOL_CLASS:
             if subject in ("数学", "物理", "化学", "高等数学"):
                 return "我先读题再列条件推结论"
@@ -316,7 +318,7 @@ class SocietySimWorld(Environment):
         # 幼儿园固定课堂场景、开放全部科目模板，小学起开放全部场景模板。
         if self.school_stage == "sensorimotor":
             slot = DaySlot.SCHOOL_CLASS
-            subject = "数学"
+            subject = "说话"
         elif self.school_stage == "kindergarten":
             slot = DaySlot.SCHOOL_CLASS
             subject = self._pick_subject(slot)
