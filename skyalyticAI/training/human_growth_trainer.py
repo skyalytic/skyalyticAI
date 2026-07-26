@@ -153,7 +153,8 @@ class HumanGrowthTrainer(NIEATrainer):
             self.brain.develop()
             self.brain.set_school_stage(self.human_env.school_stage)
 
-            if done and info.get("passed"):
+            # fix 120：升学信号在每轮结束时即下发（done 恒为 False），无需 done 条件
+            if info.get("passed"):
                 self._exams_passed += 1
             if self.human_env.school_stage != old_stage:
                 new_stage = self.human_env.school_stage

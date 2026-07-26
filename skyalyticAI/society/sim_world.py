@@ -351,6 +351,49 @@ class SocietySimWorld(Environment):
         self._ctx_indices = self.corpus.encode_char_indices(prompt)
         return self._obs_dict()
 
+    def _start_new_round(self) -> None:
+        """Episode 内启动新一轮独立问答（fix 120）。
+
+        一轮问答答完后不结束 episode，而是重新生成独立的 prompt+target，
+        brain state 与上下文跨轮保持（同一节课持续学习）。
+        消除简单重复拼接导致的周期性虚假学习信号，
+        一个 episode = 一节课内多轮师生问答，符合类人学习理论。
+        """
+        if self._state is None:
+            return
+        if self.school_stage == "sensorimotor":
+            slot = DaySlot.SCHOOL_CLASS
+            subject = "说话"
+        elif self.school_stage == "kindergarten":
+            slot = DaySlot.SCHOOL_CLASS
+            subject = self._pick_subject(slot)
+        else:
+            slot = self._pick_slot()
+            subject = self._pick_subject(slot)
+        self._current_subject = subject
+        event = self._pick_event(slot)
+        prompt, actor_role, actor_style = self._build_prompt(slot, subject, event)
+        target = self._target_answer(slot, subject, event)
+        ans_idx = self.corpus.encode_char_indices(target) or [0]
+        st = self._state
+        st.slot, st.school_stage, st.subject = slot, self.school_stage, subject
+        st.actor_role, st.actor_style, st.event = actor_role, actor_style, event
+        st.prompt_text, st.target_answer, st.answer_indices = prompt, target, ans_idx
+        st.pos = 0  # 新一轮从答案首字开始；correct/total 累计以统计轮内准确率
+        self._ctx_indices.extend(self.corpus.encode_char_indices(prompt))
+        if len(self._ctx_indices) > 1000:
+            self._ctx_indices = self._ctx_indices[-500:]
+
+    def _check_promotion(self, acc: float) -> bool:
+        if not (
+            self._steps_in_stage >= self._spec.min_steps_in_stage
+            and acc >= max(0.45, self._spec.min_rolling_speech_accuracy)
+            and self._episodes_since_exam >= self._spec.min_episodes_between_exams
+            and self._spec.allows_subject_exam
+        ):
+            return False
+        return self._promote_stage()
+
     def step(self, action: int) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         if self._state is None:
             return self.reset(), 0.0, False, {"mode": "society"}
@@ -377,7 +420,7 @@ class SocietySimWorld(Environment):
         self.relationships[pid] = float(np.clip(self.relationships.get(pid, 0.0) + delta, -1.0, 1.0))
 
         reward = 1.0 if ok else -0.2
-        done = self._state.pos >= len(self._state.answer_indices)
+        round_done = self._state.pos >= len(self._state.answer_indices)
 
         info: Dict[str, Any] = {
             "mode": "society",
@@ -396,21 +439,19 @@ class SocietySimWorld(Environment):
             "relationship": self.relationships.get(pid, 0.0),
         }
 
-        if done:
+        if round_done:
+            # fix 120：一轮问答答完后不结束 episode，而是启动新一轮独立问答。
+            # 升学检查在每轮结束时做（基于累计步数+累计准确率），episode 长度由
+            # trainer 的 steps_per_episode 控制，使每 episode 跑满预算、步数达标。
             acc = self._state.correct / max(self._state.total, 1)
             info["accuracy"] = acc
-            promoted = False
-            if (
-                self._steps_in_stage >= self._spec.min_steps_in_stage
-                and acc >= max(0.45, self._spec.min_rolling_speech_accuracy)
-                and self._episodes_since_exam >= self._spec.min_episodes_between_exams
-                and self._spec.allows_subject_exam
-            ):
-                promoted = self._promote_stage()
+            promoted = self._check_promotion(acc)
             info["promoted"] = promoted
             info["passed"] = promoted
+            self._start_new_round()
 
-        return self._obs_dict(), reward, done, info
+        # done 恒为 False：episode 由 trainer 的 max_steps 终止，使每 episode 跑满预算
+        return self._obs_dict(), reward, False, info
 
     def _promote_stage(self) -> bool:
         nxt = next_stage(self.school_stage)
