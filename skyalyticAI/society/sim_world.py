@@ -274,22 +274,32 @@ class SocietySimWorld(Environment):
         return img
 
     def _make_audio(self, text: str) -> np.ndarray:
-        # fix 119 真实语音优先：TTS 真实人声波形 > 旧哈希正弦（最后兜底）
+        # fix 121 类人听觉：不限时长连续处理，耳蜗编码器自适应压缩到固定维度。
+        # 人耳不限时长——声波连续进入耳蜗，毛细胞以~10-30ms窗口提取频谱，
+        # 听神经发放脉冲后由皮层整合。CochleaEncoder 的 spike_steps=20 相当于
+        # 皮层整合窗口，把任意时长音频压缩到 (n_fibers, spike_steps) 固定维度。
+        # 因此无需截断/补零到固定长度——短音频原样返回，长音频完整保留。
         if self.speech_synth is not None:
-            out = self.speech_synth.synthesize(text)
-            if out is not None:
-                wave, sr = out
-                if sr != 16000 and wave.shape[0] > 0:  # 统一到16k，与耳蜗编码器工作采样率一致
-                    duration = wave.shape[0] / float(sr)
-                    n = max(1, int(duration * 16000))
-                    wave = np.interp(
-                        np.linspace(0.0, duration, n, endpoint=False),
-                        np.linspace(0.0, duration, wave.shape[0], endpoint=False),
-                        wave,
-                    )
-                if wave.shape[0] >= self.audio_len:
-                    return wave[: self.audio_len]
-                return np.pad(wave, (0, self.audio_len - wave.shape[0]))
+            try:
+                out = self.speech_synth.synthesize(text)
+                if out is not None:
+                    wave, sr = out
+                    if wave.shape[0] > 0:
+                        # 安全上限：60秒，避免极端长音频导致内存问题
+                        max_samples = int(60.0 * sr)
+                        if wave.shape[0] > max_samples:
+                            wave = wave[:max_samples]
+                        if sr != 16000:  # 统一到16k，与耳蜗编码器工作采样率一致
+                            duration = wave.shape[0] / float(sr)
+                            n = max(1, int(duration * 16000))
+                            wave = np.interp(
+                                np.linspace(0.0, duration, n, endpoint=False),
+                                np.linspace(0.0, duration, wave.shape[0], endpoint=False),
+                                wave,
+                            )
+                        return wave  # 变长返回，CochleaEncoder 自动处理
+            except Exception:
+                pass  # TTS 失败时回退到正弦模拟
         # 轻量"语音"模拟：根据文本hash生成多频正弦叠加
         t = np.linspace(0, 1.0, self.audio_len, endpoint=False)
         # 修复：使用确定性哈希

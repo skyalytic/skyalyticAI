@@ -48,3 +48,12 @@ data/corpus/
 
 # Reports
 reports/
+
+# 论文与图（不提交，仅本地保留）
+*.docx
+图*.png
+图*.jpg
+CODE_SUMMARY_FOR_PAPER.md
+
+# 运行时产物（TTS 缓存等）
+assets/
