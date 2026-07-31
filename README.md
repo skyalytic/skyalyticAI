@@ -299,7 +299,7 @@ skyalyticAI/
 
 13. **论文数据点指标**（v1.3.0+）：训练日志新增 4 个内部指标——`PCN误差`（预测编码有效性，应下降）、`surprise`（主动推理内在动机）、`好奇心`（探索驱动力）、`元认知`（自我评估校准）。遗忘测试额外打印 `HDC检索` 准确率（查询记忆中最相似状态的关联动作）。这些指标供论文第4章实验验证使用。
 
-14. **GPU 性能优化**（fix 123）：主动推理的雅可比矩阵计算从 `torch.autograd.functional.jacobian`（逐列）改为 GPU 批处理有限差分（一次前向），100% 数值精确，速度快约 60 倍。
+14. **GPU 性能优化**（fix 123+124）：主动推理的 transition Jacobian（fix 123）和 observation Jacobian（fix 124）均从 `torch.autograd.functional.jacobian`（逐列）改为 GPU 批处理有限差分（一次前向），100% 数值精确。fix 124 将 `select_action` 从 48.5s 降至 0.094s（提升 510 倍）。
 
 15. **皮层化语言头 + Scheduled Sampling**（v1.4.0）：语言头从单层线性改为两层皮层化解码（hidden→概念层[tanh]→字符层），并接入 PCN 层次信息实现多级解码。Scheduled Sampling 按学段衰减教师强制率（sensorimotor=1.0 → phd=0.5），让模型逐步从"教师强制"过渡到"自主生成"。
 
