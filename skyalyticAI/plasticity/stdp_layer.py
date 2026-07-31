@@ -78,6 +78,7 @@ class STDPLayer:
         norm_target: Optional[float] = None,
         sparse_connectivity: bool = False,
         synapses_per_neuron: int = 7000,
+        error_modulation_strength: float = 0.0,
     ) -> None:
         if pre_dim <= 0:
             raise ValueError(f"pre_dim must be positive, got {pre_dim}")
@@ -102,6 +103,9 @@ class STDPLayer:
         self.w_min = w_min
         self.w_max = w_max
         self.learning_rate = learning_rate
+        # PCN-guided STDP: 预测误差调制可塑性强度（类多巴胺神经调质）
+        # error_modulation_strength=0 时退化为标准 STDP
+        self.error_modulation_strength = error_modulation_strength
 
         if self.sparse_connectivity:
             self._sparse_conn = SparseConnectivity(
@@ -153,6 +157,7 @@ class STDPLayer:
         pre_spikes: np.ndarray,
         post_spikes: np.ndarray,
         dt: float = 1.0,
+        prediction_error: Optional[float] = None,
     ) -> float:
         """
         Update all synapses based on pre- and post-synaptic spike events.
@@ -170,6 +175,11 @@ class STDPLayer:
             Values should be 0 or 1 (binary spikes).
         dt : float
             Time step duration in milliseconds.
+        prediction_error : float or None
+            PCN 预测误差（surprise 信号），用于调制 STDP 强度。
+            高误差 → 加强可塑性（惊讶时学更多）
+            低误差 → 减弱可塑性（预期内少学）
+            None 时使用标准 STDP（无调制）。
 
         Returns
         -------
@@ -192,6 +202,13 @@ class STDPLayer:
         if dt <= 0:
             raise ValueError(f"dt must be positive, got {dt}")
 
+        # PCN-guided STDP: 用预测误差调制学习率
+        effective_lr = self.learning_rate
+        if prediction_error is not None and self.error_modulation_strength > 0:
+            # modulation > 1 when error high (learn more), < 1 when error low
+            modulation = 1.0 + self.error_modulation_strength * float(prediction_error)
+            effective_lr = self.learning_rate * max(0.0, modulation)
+
         decay_pre_dt = np.exp(-dt / self.tau_plus)
         decay_post_dt = np.exp(-dt / self.tau_minus)
 
@@ -199,7 +216,7 @@ class STDPLayer:
         self.trace_post *= decay_post_dt
 
         if self.sparse_connectivity:
-            return self._update_sparse(pre_spikes, post_spikes)
+            return self._update_sparse(pre_spikes, post_spikes, effective_lr)
 
         # --- Dense path ---
         W_old = self.W.copy()
@@ -210,12 +227,12 @@ class STDPLayer:
 
         if np.any(post_spikes > 0):
             ltp_input = np.outer(post_spikes, self.trace_pre) * self.A_plus
-            ltp_input *= self.learning_rate
+            ltp_input *= effective_lr
             ltp_delta = self._scale_ltp(ltp_input)
 
         if np.any(pre_spikes > 0):
             ltd_input = np.outer(self.trace_post, pre_spikes) * self.A_minus
-            ltd_input *= self.learning_rate
+            ltd_input *= effective_lr
             ltd_delta = self._scale_ltd(ltd_input)
 
         self.W += ltp_delta - ltd_delta
@@ -234,8 +251,11 @@ class STDPLayer:
         self,
         pre_spikes: np.ndarray,
         post_spikes: np.ndarray,
+        effective_lr: Optional[float] = None,
     ) -> float:
         """Update synapses using sparse weight matrix (only existing connections)."""
+        if effective_lr is None:
+            effective_lr = self.learning_rate
         W_coo = self.W.tocoo()
         W_old_data = W_coo.data.copy()
 
@@ -249,12 +269,12 @@ class STDPLayer:
 
         # LTP: post fires → strengthen connections from traced pre neurons
         if np.any(post_spikes > 0):
-            ltp = (post_spikes[rows] * self.trace_pre[cols]) * self.A_plus * self.learning_rate
+            ltp = (post_spikes[rows] * self.trace_pre[cols]) * self.A_plus * effective_lr
             ltp_delta = self._scale_ltp_sparse(ltp, data)
 
         # LTD: pre fires → weaken connections to traced post neurons
         if np.any(pre_spikes > 0):
-            ltd = (self.trace_post[rows] * pre_spikes[cols]) * self.A_minus * self.learning_rate
+            ltd = (self.trace_post[rows] * pre_spikes[cols]) * self.A_minus * effective_lr
             ltd_delta = self._scale_ltd_sparse(ltd, data)
 
         data += ltp_delta - ltd_delta
@@ -379,6 +399,7 @@ class STDPLayer:
             "pre_dim": self.pre_dim,
             "post_dim": self.post_dim,
             "sparse_connectivity": self.sparse_connectivity,
+            "error_modulation_strength": self.error_modulation_strength,
         }
         if self.sparse_connectivity:
             W_coo = self.W.tocoo()
@@ -395,6 +416,7 @@ class STDPLayer:
         self.sparse_connectivity = state.get("sparse_connectivity", False)
         self.trace_pre = state["trace_pre"].copy()
         self.trace_post = state["trace_post"].copy()
+        self.error_modulation_strength = state.get("error_modulation_strength", 0.0)
         if self.sparse_connectivity:
             self.W = sp.csr_matrix(
                 (state["W_data"], (state["W_row"], state["W_col"])),

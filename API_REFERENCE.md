@@ -21,9 +21,9 @@
 - `perceive(observation) -> (hidden, prediction_error, surprise)` 感知输入
 - `perceive_multimodal(visual, audio, raw_observation) -> (fused, pred_error, surprise)` 多模态感知
 - `think(hidden, action) -> (new_hidden, intrinsic_reward)` 思考一步
-- `speak(hidden_state) -> int` 说话（输出字符索引）
-- `asr_decode(hidden_state) -> int` 语音识别解码
-- `ocr_decode(hidden_state) -> int` 文字识别解码
+- `speak(hidden_state) -> int` 说话（输出字符索引，v1.4.0+ 接入 PCN 层次多级解码）
+- `asr_decode(hidden_state) -> int` 语音识别解码（接入 PCN 层次）
+- `ocr_decode(hidden_state) -> int` 文字识别解码（接入 PCN 层次）
 
 **学习**
 - `learn(hidden, action, next_hidden, reward, prediction_error, env_reward) -> dict` 综合学习
@@ -81,10 +81,11 @@ STDP 突触可塑性
 - `reset() / state_dict() / load_state_dict(state)`
 
 ### class STDPLayer (`stdp_layer.py`)
-STDP 网络层
+STDP 网络层（支持 PCN 误差调制，v1.4.0+）
 - `forward(x) -> spikes` 前向传播
-- `update_stdp(pre_spikes, post_spikes) -> None` STDP 更新
+- `update(pre_spikes, post_spikes, dt=1.0, prediction_error=None) -> float` STDP 更新（prediction_error 为 PCN 预测误差，调制学习率）
 - `reset() / state_dict() / load_state_dict(state)`
+- 构造参数 `error_modulation_strength: float = 0.0`（0=标准STDP，>0=误差调制强度）
 
 ### class STDPVariant (`stdp.py`)
 STDP 变体枚举（STANDARD, ANTI_STDP, etc.）
@@ -120,6 +121,9 @@ STDP 变体枚举（STANDARD, ANTI_STDP, etc.）
 - `retrieve(query, top_k) -> List[Tuple]` 检索最相似
 - `store_episode(sequence) -> np.ndarray` 存储情节
 - `query_episode(partial) -> List` 查询情节
+- `store_graph_edge(source, relation, target) -> np.ndarray` 存储知识图谱三元组（v1.4.0+）
+- `query_graph(source, relation, top_k) -> List[Tuple]` 图查询：给定(source, relation)检索target（v1.4.0+）
+- `graph_walk(start_concept, relations) -> List[Tuple]` 多跳推理游走（v1.4.0+，理论声明"苹果→是一种→水果→含有→维生素"）
 - `bundle(*vectors) / bind(a, b) / unbind(bound, key) / permute(v, shift)` 超维运算
 - `reset() / state_dict() / load_state_dict(state)`
 
@@ -219,7 +223,8 @@ STDP 变体枚举（STANDARD, ANTI_STDP, etc.）
 - `predict_next_state(state, action) -> np.ndarray` 预测下一状态
 - `decode(state) -> np.ndarray` 解码观测
 - `predict_reward(state) -> float` 预测奖励
-- `imagine_trajectory(state, actions) -> List` 想象轨迹
+- `imagine_trajectory(state, actions) -> List` 想象轨迹（单路径）
+- `imagine_deep(start_obs, available_actions, depth, n_branches, ...) -> List[Dict]` 深度想象 beam search（v1.4.0+，理论声明 ≥10 步 rollout）
 - `train_step(batch) -> dict` 训练一步
 - `train_step_batch(batch) -> dict` 批量训练
 - `reset() / state_dict() / load_state_dict(state)`
@@ -259,10 +264,13 @@ STDP 变体枚举（STANDARD, ANTI_STDP, etc.）
 ## 12. 语言 — `skyalyticAI.language`
 
 ### class LanguageHead (`language_head.py`)
-语言头（布罗卡区/韦尼克区，fix 118 教师强制）
+皮层化语言头（布罗卡区/韦尼克区，v1.4.0+ 皮层化 + scheduled sampling）
+- 架构：hidden → 概念层(tanh) → 字符层(linear)，`lang_hidden_dim` 控制概念层维度（0=退化为单层）
 - `forward(hidden_state) -> np.ndarray` 前向传播（输出概率分布）
-- `learn(hidden_state, target_index, reward) -> dict` 学习（教师强制）
+- `learn(hidden_state, target_index, reward) -> dict` 学习（教师强制 + scheduled sampling）
+- `set_teacher_forcing_rate(rate) -> None` 设置教师强制概率（1.0=完全教师强制，0.0=完全自主生成）
 - `state_dict() / load_state_dict(state)`
+- 构造参数 `lang_hidden_dim: Optional[int] = None`（概念层维度）、`teacher_forcing_rate: float = 1.0`
 
 ### class TextEncoder (`text_encoder.py`)
 文本编码器

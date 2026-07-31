@@ -93,6 +93,8 @@ class HDCMemory:
         self.item_memory: Dict[str, np.ndarray] = {}
         self.associative_memory: Dict[str, np.ndarray] = {}
         self.episodic_memory: List[Dict[str, Any]] = []
+        # 图结构记忆：存储 (source, relation, target) 三元组
+        self.graph_edges: Dict[str, np.ndarray] = {}
 
         self._permutation: Optional[np.ndarray] = None
 
@@ -536,11 +538,165 @@ class HDCMemory:
             self._permutation = self.random_vector()
         return self._permutation
 
+    # ------------------------------------------------------------------
+    # Graph-structured memory (knowledge graph via HDC)
+    # ------------------------------------------------------------------
+
+    def store_graph_edge(
+        self,
+        source: str,
+        relation: str,
+        target: str,
+    ) -> np.ndarray:
+        """
+        存储知识图谱三元组 (source, relation, target)。
+
+        编码方式：edge_vec = bind(bind(source_vec, relation_vec), target_vec)
+        这样可以通过 unbind 进行图查询：
+        - 给定 source + relation，查询 target
+        - 给定 source + target，查询 relation
+
+        Parameters
+        ----------
+        source : str
+            源概念名。
+        relation : str
+            关系名（如 "is_a", "causes", "part_of"）。
+        target : str
+            目标概念名。
+
+        Returns
+        -------
+        np.ndarray
+            图边的超维向量。
+        """
+        for name in (source, relation, target):
+            if name not in self.item_memory:
+                self.add_concept(name)
+
+        s_vec = self.item_memory[source]
+        r_vec = self.item_memory[relation]
+        t_vec = self.item_memory[target]
+
+        # 三元组编码：bind(bind(s, r), t)
+        edge_vec = self.bind(self.bind(s_vec, r_vec), t_vec)
+
+        edge_key = f"{source}|{relation}|{target}"
+        self.graph_edges[edge_key] = edge_vec.copy()
+
+        return edge_vec
+
+    def query_graph(
+        self,
+        source: str,
+        relation: str,
+        top_k: int = 3,
+    ) -> List[Tuple[str, float]]:
+        """
+        图查询：给定 (source, relation)，检索最可能的 target。
+
+        纯 HDC 联想检索（无字符串解析）：
+        1. 构造查询向量 query_vec = bind(source_vec, relation_vec)
+        2. 对每条图边做 unbind(edge_vec, query_vec) 得到 target 近似
+        3. 在 item_memory 中找最相似的 target
+        4. 按相似度排序返回
+
+        纯HDC实现的优势：
+        - 不依赖字符串解析，完全基于超维向量的联想检索
+        - 支持模糊查询（source/relation 不完全匹配也能工作）
+        - 体现 HDC 的核心理论：bind/unbind 的自逆性
+
+        Parameters
+        ----------
+        source : str
+            源概念名。
+        relation : str
+            关系名。
+        top_k : int
+            返回前 k 个结果。
+
+        Returns
+        -------
+        list of (target_name, similarity) tuples
+        """
+        if source not in self.item_memory or relation not in self.item_memory:
+            return []
+
+        s_vec = self.item_memory[source]
+        r_vec = self.item_memory[relation]
+        query_vec = self.bind(s_vec, r_vec)
+
+        # 纯 HDC 联想检索：遍历所有边，用 unbind 提取 target
+        # 理论：edge_vec = bind(bind(s, r), t)
+        #       unbind(edge_vec, bind(s, r)) = t（近似）
+        # 当查询的 (source, relation) 与边的 (s, r) 匹配时，
+        # unbind 后的向量接近真实 target_vec，retrieve 返回高相似度
+        # 当不匹配时，unbind 后的向量是噪声，retrieve 返回低相似度
+        results: List[Tuple[str, float]] = []
+        for edge_key, edge_vec in self.graph_edges.items():
+            # unbind 得到 target 的近似向量
+            t_approx = self.unbind(edge_vec, query_vec)
+            # 在 item_memory 中找最相似的 target
+            matches = self.retrieve(t_approx, top_k=1)
+            if matches:
+                # 纯HDC相似度：直接用 retrieve 的余弦相似度
+                results.append(matches[0])
+
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:top_k]
+
+    def graph_walk(
+        self,
+        start_concept: str,
+        relations: List[str],
+    ) -> List[Tuple[str, str, str, float]]:
+        """
+        沿知识图谱进行多关系多跳心智游走（multi-hop reasoning）。
+
+        支持异质关系串联，例如：
+            graph_walk("苹果", ["is_a", "contains"])
+            → 苹果 --is_a--> 水果 --contains--> 维生素
+
+        这实现了理论声明中的：
+        "苹果->是一种->水果->含有->维生素" 多 relation 串联推理。
+
+        Parameters
+        ----------
+        start_concept : str
+            起始概念名。
+        relations : list of str
+            每步要沿的关系类型序列（支持不同关系串联）。
+
+        Returns
+        -------
+        list of (relation, current_concept, next_concept, similarity) tuples
+            游走路径，每步记录用到的关系、当前概念、下一概念、相似度。
+        """
+        path: List[Tuple[str, str, str, float]] = []
+        current = start_concept
+
+        for relation in relations:
+            if current not in self.item_memory:
+                break
+            if relation not in self.item_memory:
+                break
+            results = self.query_graph(current, relation, top_k=1)
+            if not results:
+                break
+            next_concept, sim = results[0]
+            if next_concept == current or sim < self.similarity_threshold:
+                break
+            path.append((relation, current, next_concept, sim))
+            current = next_concept
+
+        return path
+
     def reset(self) -> None:
         """Clear all memories."""
         self.item_memory = {}
         self.associative_memory = {}
         self.episodic_memory = []
+        self.graph_edges = {}
         self._permutation = None
 
     def state_dict(self) -> Dict[str, Any]:
@@ -549,6 +705,7 @@ class HDCMemory:
             "item_memory": dict(self.item_memory),
             "associative_memory": dict(self.associative_memory),
             "episodic_memory": list(self.episodic_memory),
+            "graph_edges": dict(self.graph_edges),
             "dim": self.dim,
             "vector_type": self.vector_type.value,
             "similarity_threshold": self.similarity_threshold,
@@ -571,6 +728,9 @@ class HDCMemory:
         ]
         if len(self.episodic_memory) > 10000:
             self.episodic_memory = self.episodic_memory[-5000:]
+        self.graph_edges = {
+            k: v.copy() for k, v in state.get("graph_edges", {}).items()
+        }
         self._permutation = state["_permutation"].copy() if state.get("_permutation") is not None else None
 
     def __repr__(self) -> str:

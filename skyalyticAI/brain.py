@@ -335,18 +335,24 @@ class NIEABrain:
         self.school_stage: str = "sensorimotor"
 
         if language_vocab_size is not None and language_vocab_size > 0:
+            # 皮层化语言头：hidden → 概念层(tanh) → 字符层
+            # lang_hidden_dim = hidden_dim/2 平衡表达力与计算效率
+            lang_hidden = max(64, hidden_dim // 2)
             self.language_head: Optional[LanguageHead] = LanguageHead(
                 hidden_dim=hidden_dim,
                 vocab_size=language_vocab_size,
+                lang_hidden_dim=lang_hidden,
             )
             # 多模态任务头：ASR/OCR（与语言头同构，独立参数）
             self.asr_head: Optional[LanguageHead] = LanguageHead(
                 hidden_dim=hidden_dim,
                 vocab_size=language_vocab_size,
+                lang_hidden_dim=lang_hidden,
             )
             self.ocr_head: Optional[LanguageHead] = LanguageHead(
                 hidden_dim=hidden_dim,
                 vocab_size=language_vocab_size,
+                lang_hidden_dim=lang_hidden,
             )
         else:
             self.language_head = None
@@ -407,6 +413,8 @@ class NIEABrain:
             weight_init="glorot",
             sparse_connectivity=sparse,
             synapses_per_neuron=synapses_per_neuron,
+            # PCN-guided STDP: 预测误差调制可塑性（0.5 = 误差每增加1，学习率×1.5）
+            error_modulation_strength=0.5,
         )
 
         self.pcn = PredictiveCodingNetwork(
@@ -711,51 +719,103 @@ class NIEABrain:
 
         return self.perceive(sensory_input)
 
+    def _get_pcn_enhanced_hidden(self, hidden_state: np.ndarray) -> np.ndarray:
+        """
+        将 PCN 层次信息融合到 hidden_state，实现语言头的多级解码。
+
+        理论声明："Language head must be integrated into PCN hierarchy for multi-level decoding"
+        - PCN 的层次结构 [hidden_dim, pcn_hidden_dim, pcn_hidden_dim//2, action_dim]
+          代表从具体到抽象的多级表征
+        - 语言头从 PCN 的多个层获取信息，每层提供不同级别的抽象
+        - 越高层越抽象（语义/概念），越低层越具体（感知/特征）
+        - 融合后语言头能利用 PCN 的层次化表征进行多级解码
+
+        实现方式：
+        - 将 PCN 各层状态投影到 hidden_dim（填充或截断）
+        - 加权融合到 hidden_state（越高层权重越小，避免抽象信息主导）
+        - tanh 压缩 PCN 状态到 [-1, 1] 范围，防止数值不稳定
+        """
+        if self.pcn is None or not hasattr(self.pcn, 'layers'):
+            return hidden_state
+
+        enhanced = hidden_state.copy()
+        n_layers = len(self.pcn.layers)
+
+        for i, layer in enumerate(self.pcn.layers):
+            if layer.x is None:
+                continue
+
+            # 数值稳定性：清理 NaN/inf，防止传播到语言头
+            layer_state = np.nan_to_num(layer.x, nan=0.0, posinf=1.0, neginf=-1.0)
+            hd = self.hidden_dim
+
+            # 投影到 hidden_dim（填充或截断）
+            if layer_state.shape[0] == hd:
+                projected = layer_state
+            elif layer_state.shape[0] < hd:
+                projected = np.zeros(hd, dtype=np.float64)
+                projected[:layer_state.shape[0]] = layer_state
+            else:
+                projected = layer_state[:hd]
+
+            # 加权融合：越高层权重越小（layer 0 权重最大，最后一层权重最小）
+            # 这样低层（具体特征）贡献大，高层（抽象概念）贡献小但存在
+            weight = 0.1 / (i + 1)  # layer 0: 0.1, layer 1: 0.05, layer 2: 0.033...
+            enhanced += weight * np.tanh(projected)
+
+        return enhanced
+
     def speak(self, hidden_state: np.ndarray) -> int:
-        """语言输出：由内部状态生成下一个字符索引。"""
+        """语言输出：由内部状态生成下一个字符索引（接入PCN层次）。"""
         if self.language_head is None:
             raise RuntimeError("未启用语言头，请创建大脑时传入 language_vocab_size")
-        return self.language_head.sample(hidden_state)
+        enhanced = self._get_pcn_enhanced_hidden(hidden_state)
+        return self.language_head.sample(enhanced)
 
     def learn_speech(
         self, hidden_state: np.ndarray, target_index: int, reward: float
     ) -> Dict[str, float]:
-        """根据对错反馈学习说话。"""
+        """根据对错反馈学习说话（接入PCN层次）。"""
         if self.language_head is None:
             return {}
+        enhanced = self._get_pcn_enhanced_hidden(hidden_state)
         capped_reward = max(-10.0, min(10.0, float(reward)))  # Preserve sign, cap magnitude
-        return self.language_head.learn(hidden_state, target_index, capped_reward)
+        return self.language_head.learn(enhanced, target_index, capped_reward)
 
     def asr_decode(self, hidden_state: np.ndarray) -> int:
-        """ASR 头：从隐藏状态预测下一字符索引。"""
+        """ASR 头：从隐藏状态预测下一字符索引（接入PCN层次）。"""
         if self.asr_head is None:
             if self.language_head is None:
                 return 0
             return self.speak(hidden_state)
-        return self.asr_head.sample(hidden_state)
+        enhanced = self._get_pcn_enhanced_hidden(hidden_state)
+        return self.asr_head.sample(enhanced)
 
     def ocr_decode(self, hidden_state: np.ndarray) -> int:
-        """OCR 头：从隐藏状态预测下一字符索引。"""
+        """OCR 头：从隐藏状态预测下一字符索引（接入PCN层次）。"""
         if self.ocr_head is None:
             if self.language_head is None:
                 return 0
             return self.speak(hidden_state)
-        return self.ocr_head.sample(hidden_state)
+        enhanced = self._get_pcn_enhanced_hidden(hidden_state)
+        return self.ocr_head.sample(enhanced)
 
     def learn_asr(self, hidden_state: np.ndarray, target_index: int, reward: float) -> Dict[str, float]:
-        """ASR 监督学习（字符级）。"""
+        """ASR 监督学习（字符级，接入PCN层次）。"""
         if self.asr_head is None:
             return {}
+        enhanced = self._get_pcn_enhanced_hidden(hidden_state)
         capped_reward = max(-10.0, min(10.0, float(reward)))
-        out = self.asr_head.learn(hidden_state, target_index, capped_reward)
+        out = self.asr_head.learn(enhanced, target_index, capped_reward)
         return {"asr_loss": out.get("speech_loss", 0.0), "asr_target_prob": out.get("target_prob", 0.0)}
 
     def learn_ocr(self, hidden_state: np.ndarray, target_index: int, reward: float) -> Dict[str, float]:
-        """OCR 监督学习（字符级）。"""
+        """OCR 监督学习（字符级，接入PCN层次）。"""
         if self.ocr_head is None:
             return {}
+        enhanced = self._get_pcn_enhanced_hidden(hidden_state)
         capped_reward = max(-10.0, min(10.0, float(reward)))
-        out = self.ocr_head.learn(hidden_state, target_index, capped_reward)
+        out = self.ocr_head.learn(enhanced, target_index, capped_reward)
         return {"ocr_loss": out.get("speech_loss", 0.0), "ocr_target_prob": out.get("target_prob", 0.0)}
 
     def set_school_stage(self, stage: str) -> None:
@@ -947,7 +1007,19 @@ class NIEABrain:
         """
         pre_spikes = (hidden_state > np.mean(hidden_state)).astype(np.float64)
         post_spikes = (next_hidden_state > np.mean(next_hidden_state)).astype(np.float64)
-        stdp_update = self.stdp_layer.update(pre_spikes, post_spikes)
+        # PCN-guided STDP: 用 PCN 预测误差调制 STDP 学习强度
+        # 归一化：除以 sqrt(dim) 防止大规模下误差范数爆炸
+        pcn_error_scalar = 0.0
+        if self.pcn.prediction_errors:
+            valid_errors = [e for e in self.pcn.prediction_errors if e is not None]
+            if valid_errors:
+                pcn_error_scalar = float(np.mean([
+                    np.linalg.norm(e) / max(1.0, np.sqrt(e.shape[0]))
+                    for e in valid_errors
+                ]))
+        stdp_update = self.stdp_layer.update(
+            pre_spikes, post_spikes, prediction_error=pcn_error_scalar
+        )
 
         if self._saved_pcn_state is not None:
             current_errors = self.pcn.prediction_errors
@@ -1051,13 +1123,36 @@ class NIEABrain:
             "surprise": surprise,
         }
 
+    # Scheduled Sampling：按学段衰减教师强制率
+    # 理论：早期完全教师强制（快速收敛），后期逐步降低（自主生成）
+    # 对应学段：sensorimotor=1.0 → phd=0.5
+    _STAGE_TEACHER_FORCING = {
+        DevelopmentStage.SENSORIMOTOR: 1.0,
+        DevelopmentStage.KINDERGARTEN: 0.9,
+        DevelopmentStage.PRIMARY: 0.8,
+        DevelopmentStage.MIDDLE: 0.7,
+        DevelopmentStage.HIGH: 0.6,
+        DevelopmentStage.UNDERGRADUATE: 0.5,
+        DevelopmentStage.MASTER: 0.5,
+        DevelopmentStage.PHD: 0.5,
+    }
+
     def develop(self) -> None:
         """
         Advance developmental stage based on experience.
+
+        Scheduled Sampling：随学段推进逐步降低 teacher_forcing_rate，
+        让语言头从"完全教师强制"过渡到"部分自主生成"，
+        实现理论声明的"逐步减少对教师信号的依赖"。
         """
         self.age += 1
         if self.development_stages:
             self.stage = DevelopmentStage.get_stage(self.age)
+            # 同步衰减所有语言头的 teacher_forcing_rate
+            target_rate = self._STAGE_TEACHER_FORCING.get(self.stage, 1.0)
+            for head in (self.language_head, self.asr_head, self.ocr_head):
+                if head is not None:
+                    head.set_teacher_forcing_rate(target_rate)
 
     def _discretize_observation(self, state: np.ndarray) -> int:
         """Convert continuous state to discrete observation index."""
@@ -1067,19 +1162,101 @@ class NIEABrain:
     def _imagine_action_outcomes(
         self, hidden_state: np.ndarray
     ) -> Dict[int, Dict[str, Any]]:
+        """
+        预测每个动作的后果。
+
+        理论声明："World model must implement deep imagination rollout (≥10 steps)"
+        - 早期（age < 500）：单步预测（快速、低计算成本）
+        - 后期（age >= 500）：深度想象 beam search（imagine_deep，多步 rollout）
+        """
         obs = self.state_to_obs_W @ hidden_state + self.state_to_obs_b
         z = self.world_model.encode_deterministic(obs)  # Same for all actions
         outcomes = {}
-        for a in range(self.action_dim):
-            action_vec = np.zeros(self.action_dim, dtype=np.float64)
-            action_vec[a] = 1.0
-            z_next = self.world_model.predict_next_state(z, action_vec)
-            obs_next = self.world_model.decode(z_next)
-            reward_pred = self.world_model.predict_reward(z_next)
-            outcomes[a] = {
-                "obs": obs_next,
-                "reward": reward_pred,
-            }
+
+        # 判断是否启用深度想象
+        # 条件：brain 已成熟 + world_model 已训练 + 近期损失较低
+        use_deep_imagination = (
+            self.age >= 500
+            and len(self.world_model.loss_history) >= 10
+            and np.mean([l["total"] for l in self.world_model.loss_history[-10:]]) < 2.0
+        )
+
+        if use_deep_imagination:
+            # 深度想象：对每个 action 单独做 beam search rollout
+            # 理论声明："deep imagination rollout (≥10 steps) without actual action execution"
+            # 对每个 action 单独调用 imagine_deep，确保：
+            # 1. 每个 action 都有深度想象结果（不被 beam search 剪枝）
+            # 2. 所有 action 的 reward 量级一致（都是10步累积折扣价值）
+            available_actions = []
+            action_vecs = []
+            for a in range(self.action_dim):
+                av = np.zeros(self.action_dim, dtype=np.float64)
+                av[a] = 1.0
+                available_actions.append(av)
+                action_vecs.append(av)
+
+            for a in range(self.action_dim):
+                av = action_vecs[a]
+                # 第一步：执行 action a
+                z_next = self.world_model.predict_next_state(z, av)
+                obs_next = self.world_model.decode(z_next)
+                first_reward = self.world_model.predict_reward(z_next)
+
+                # 后续9步：从 obs_next 开始 beam search（总共10步）
+                beams = self.world_model.imagine_deep(
+                    start_obs=obs_next,
+                    available_actions=available_actions,
+                    depth=9,            # 第一步已走，再走9步=10步
+                    n_branches=2,       # 每个action的beam宽度（控制计算量）
+                    deterministic=True,
+                    gamma=0.95,
+                    epistemic_weight=0.1,
+                )
+
+                if beams:
+                    # 取最优路径的累积价值 + 第一步奖励
+                    best_beam = beams[0]
+                    deep_reward = first_reward + best_beam["total_value"]
+                    epistemic = best_beam["epistemic_values"][0] if best_beam["epistemic_values"] else 0.0
+                    # 数值稳定性：NaN/inf 检查，防止传播到 action selection
+                    if np.isnan(deep_reward) or np.isinf(deep_reward):
+                        deep_reward = float(self.world_model.predict_reward(z_next))
+                    if np.isnan(epistemic) or np.isinf(epistemic):
+                        epistemic = 0.0
+                else:
+                    deep_reward = first_reward
+                    epistemic = 0.0
+
+                # 最终兜底：确保 reward 和 epistemic 不是 NaN/inf
+                # 即使 world_model 内部权重有 NaN，也不会传播到 action selection
+                if np.isnan(deep_reward) or np.isinf(deep_reward):
+                    deep_reward = 0.0
+                if np.isnan(epistemic) or np.isinf(epistemic):
+                    epistemic = 0.0
+                # 清理 obs_next 中的 NaN/inf
+                obs_next = np.nan_to_num(obs_next, nan=0.0, posinf=1.0, neginf=-1.0)
+
+                outcomes[a] = {
+                    "obs": obs_next,
+                    "reward": float(deep_reward),
+                    "epistemic_value": epistemic,
+                }
+        else:
+            # 早期：单步预测（快速）
+            for a in range(self.action_dim):
+                action_vec = np.zeros(self.action_dim, dtype=np.float64)
+                action_vec[a] = 1.0
+                z_next = self.world_model.predict_next_state(z, action_vec)
+                obs_next = self.world_model.decode(z_next)
+                reward_pred = self.world_model.predict_reward(z_next)
+                # 数值稳定性：清理 NaN/inf（与深度想象路径一致的防御）
+                if np.isnan(reward_pred) or np.isinf(reward_pred):
+                    reward_pred = 0.0
+                obs_next = np.nan_to_num(obs_next, nan=0.0, posinf=1.0, neginf=-1.0)
+                outcomes[a] = {
+                    "obs": obs_next,
+                    "reward": float(reward_pred),
+                }
         return outcomes
 
     def _evolve_structure(self) -> None:
@@ -1149,7 +1326,12 @@ class NIEABrain:
         return int(np.argmax(action_scores))
 
     def _query_memory(self, state: np.ndarray, top_k: int = 3) -> List[Any]:
-        """Query HDC memory for relevant experiences."""
+        """Query HDC memory for relevant experiences.
+
+        支持三层检索：
+        1. 直接联想检索（item_memory + associative_memory）
+        2. HDC 图记忆多跳推理（query_graph / graph_walk）
+        """
         state_vec = np.sign(state[:self.hd_memory.dim])
         if state_vec.shape[0] < self.hd_memory.dim:
             padded = np.zeros(self.hd_memory.dim, dtype=np.float64)
@@ -1169,6 +1351,17 @@ class NIEABrain:
                             results.append((assoc_key, float(assoc_val[1])))
                         else:
                             results.append((assoc_key, 0.5))
+
+        # HDC 图记忆多跳推理：从最相似状态出发，沿 "leads_to" 关系游走
+        # 理论声明："苹果->是一种->水果->含有->维生素" 多 relation 串联推理
+        if results:
+            best_key, best_sim = results[0]
+            # 用 query_graph 查询该状态能到达哪些状态
+            graph_results = self.hd_memory.query_graph(best_key, "leads_to", top_k=2)
+            for target_name, g_sim in graph_results:
+                # 避免重复
+                if not any(r[0] == target_name for r in results):
+                    results.append((target_name, g_sim * best_sim))
 
         return results
 
@@ -1286,6 +1479,13 @@ class NIEABrain:
         self.hd_memory.store_association(state_key + "__next_state", next_state_key)
         self.hd_memory.store_association(state_key + "__reward", reward_key)
         self.hd_memory.store_association(state_key + "__surprise", surprise_key)
+
+        # HDC 图记忆：存储 (state, action, next_state) 三元组
+        # 支持多跳推理：state --action--> next_state --action--> ...
+        # 理论声明："HDC memory must support graph-structured representations for multi-step reasoning"
+        self.hd_memory.store_graph_edge(state_key, action_key, next_state_key)
+        # 额外存储 "leads_to" 关系，用于无动作标签的多跳推理
+        self.hd_memory.store_graph_edge(state_key, "leads_to", next_state_key)
 
     def _consolidate_memory(self) -> None:
         """

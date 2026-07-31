@@ -301,6 +301,14 @@ skyalyticAI/
 
 14. **GPU 性能优化**（fix 123）：主动推理的雅可比矩阵计算从 `torch.autograd.functional.jacobian`（逐列）改为 GPU 批处理有限差分（一次前向），100% 数值精确，速度快约 60 倍。
 
+15. **皮层化语言头 + Scheduled Sampling**（v1.4.0）：语言头从单层线性改为两层皮层化解码（hidden→概念层[tanh]→字符层），并接入 PCN 层次信息实现多级解码。Scheduled Sampling 按学段衰减教师强制率（sensorimotor=1.0 → phd=0.5），让模型逐步从"教师强制"过渡到"自主生成"。
+
+16. **HDC 图记忆 + 多跳推理**（v1.4.0）：HDC 记忆新增知识图谱三元组存储（`store_graph_edge`）和图查询（`query_graph`/`graph_walk`），支持"苹果→是一种→水果→含有→维生素"的多关系串联推理，纯 HDC bind/unbind 实现。
+
+17. **PCN-guided STDP**（v1.4.0）：STDP 突触可塑性新增预测误差调制（`error_modulation_strength`），高预测误差时加强可塑性（惊讶时学更多），低误差时减弱（预期内少学），模拟多巴胺神经调质机制。
+
+18. **深度想象 Beam Search**（v1.4.0）：世界模型新增 `imagine_deep` 方法，实现真正的 beam search 深度想象 rollout（≥10 步），价值函数 G(a)=Σγ^t·[r(s_t)+λ·H(s_t)] 同时考虑实用价值（奖励）和认知价值（信息熵）。训练后期（age≥500）自动启用。
+
 ## 完整 API 参考
 
 详细的 API 文档（覆盖 20 个模块、所有公开类与方法签名）见 [API_REFERENCE.md](API_REFERENCE.md)。

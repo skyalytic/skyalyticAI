@@ -545,6 +545,124 @@ class WorldModel:
 
         return np.array(states), np.array(observations)
 
+    def imagine_deep(
+        self,
+        start_obs: np.ndarray,
+        available_actions: List[np.ndarray],
+        depth: int = 10,
+        n_branches: int = 3,
+        deterministic: bool = True,
+        gamma: float = 0.95,
+        epistemic_weight: float = 0.1,
+    ) -> List[Dict[str, Any]]:
+        """
+        深度想象 rollout（真正的 beam search）：从当前状态出发，探索多条可能的未来路径。
+
+        真正的 beam search：
+        1. 从根状态开始，维护 n_branches 条候选路径
+        2. 每步对每条候选路径展开所有 available_actions
+        3. 得到 n_branches × |actions| 个新候选
+        4. 按 G(a) = Σ γ^t · [r(s_t) + λ · H(s_t)] 排序，保留前 n_branches
+        5. 迭代 depth 步
+
+        价值函数（主动推理理论）：
+        G(a) = Σ_t γ^t · [r(s_t) + epistemic_weight · H(s_t)]
+        其中 H(s) = -Σ p(s) log p(s) 是状态熵（认知价值/好奇心）
+
+        Parameters
+        ----------
+        start_obs : np.ndarray
+            当前观测。
+        available_actions : list of np.ndarray
+            每步可选动作列表。
+        depth : int
+            想象深度（步数）。
+        n_branches : int
+            beam search 宽度（每步保留的候选数）。
+        deterministic : bool
+            是否使用确定性编码。
+        gamma : float
+            折扣因子（0-1），未来奖励的折扣。
+        epistemic_weight : float
+            认知价值权重（好奇心强度）。
+
+        Returns
+        -------
+        list of dict
+            前 n_branches 条最优路径，每条包含：
+            - 'actions': 动作序列
+            - 'states': 状态序列
+            - 'observations': 观测序列
+            - 'rewards': 预测奖励序列
+            - 'epistemic_values': 认知价值序列
+            - 'total_value': 路径总价值（pragmatic + epistemic）
+        """
+        if deterministic:
+            root_state = self.encode_deterministic(start_obs)
+        else:
+            root_state, _, _ = self.encode(start_obs)
+
+        # 初始化 beam：单条路径（根状态）
+        beams: List[Dict[str, Any]] = [{
+            "actions": [],
+            "states": [root_state.copy()],
+            "observations": [self.decode(root_state).copy()],
+            "rewards": [],
+            "epistemic_values": [],
+            "total_value": 0.0,
+        }]
+
+        for step in range(depth):
+            candidates: List[Dict[str, Any]] = []
+
+            for beam in beams:
+                current_state = beam["states"][-1]
+
+                for action in available_actions:
+                    # 预测下一状态
+                    next_state = self.predict_next_state(current_state, action)
+                    next_obs = self.decode(next_state)
+                    reward = self.predict_reward(next_state)
+
+                    # 计算认知价值（状态的信息熵）
+                    # 理论声明：H(s) = -Σ p(s) log p(s)
+                    # 用 softmax 将状态向量转为概率分布，再计算香农熵
+                    # 数值稳定性防御：
+                    # 1. nan_to_num 清理 NaN/inf（权重爆炸时 next_state 可能含异常值）
+                    # 2. clip 限制范围，防止 exp 溢出
+                    # 3. +1e-10 防止 log(0)
+                    state_clean = np.nan_to_num(next_state, nan=0.0, posinf=50.0, neginf=-50.0)
+                    state_clipped = np.clip(state_clean, -50.0, 50.0)
+                    p = np.exp(state_clipped - np.max(state_clipped))
+                    p = p / (np.sum(p) + 1e-10)
+                    # p 中可能有精确0，但 0*log(0+1e-10)=0*(-23)=0，不会 NaN
+                    entropy = float(-np.sum(p * np.log(p + 1e-10)))
+                    # 最终防御：如果仍有 NaN（理论不应发生），用0替代
+                    if np.isnan(entropy) or np.isinf(entropy):
+                        entropy = 0.0
+                    epistemic_value = epistemic_weight * entropy
+
+                    # 折扣累积价值
+                    discounted_reward = (gamma ** step) * reward
+                    discounted_epistemic = (gamma ** step) * epistemic_value
+                    new_value = beam["total_value"] + discounted_reward + discounted_epistemic
+
+                    new_beam = {
+                        "actions": beam["actions"] + [action.copy()],
+                        "states": beam["states"] + [next_state.copy()],
+                        "observations": beam["observations"] + [next_obs.copy()],
+                        "rewards": beam["rewards"] + [reward],
+                        "epistemic_values": beam["epistemic_values"] + [epistemic_value],
+                        "total_value": new_value,
+                    }
+                    candidates.append(new_beam)
+
+            # 按总价值排序，保留前 n_branches 条
+            candidates.sort(key=lambda x: x["total_value"], reverse=True)
+            beams = candidates[:n_branches]
+
+        return beams
+
     # ------------------------------------------------------------------
     # Training – dispatch
     # ------------------------------------------------------------------
