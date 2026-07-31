@@ -66,6 +66,8 @@ class SocietySimWorld(Environment):
         real_perception: bool = True,
         seed: Optional[int] = None,
     ) -> None:
+        import time as _time
+        _t0 = _time.time()
         self.rng = np.random.default_rng(seed)
         self.observation_dim = observation_dim
         self.school_stage = school_stage if school_stage in STAGE_ORDER else "sensorimotor"
@@ -73,12 +75,22 @@ class SocietySimWorld(Environment):
         self.student_name = student_name
         self.image_size = image_size
         self.audio_len = audio_len
+        print(f"[SocietySim] 基础属性: {_time.time()-_t0:.1f}s", flush=True)
 
+        _t0 = _time.time()
         self.corpus = CorpusManager(corpus_root=corpus_root, seed=seed)
+        print(f"[SocietySim] CorpusManager 完成: {_time.time()-_t0:.1f}s", flush=True)
+
         self.vocab_size = max(self.corpus.vocab_len(), 32)
+
+        _t0 = _time.time()
         self.teacher = TeacherNPC(seed=(seed or 0) + 123)
+        print(f"[SocietySim] TeacherNPC 完成: {_time.time()-_t0:.1f}s", flush=True)
+
         self.teacher.student_name = student_name
+        _t0 = _time.time()
         self.text_encoder = TextEncoder(vocab_size=self.vocab_size, output_dim=observation_dim, context_len=32)
+        print(f"[SocietySim] TextEncoder 完成: {_time.time()-_t0:.1f}s", flush=True)
 
         self._spec = get_quality_spec(self.school_stage)
         self._steps_in_stage = 0
@@ -129,10 +141,14 @@ class SocietySimWorld(Environment):
     def set_stage(self, stage: str) -> None:
         if stage not in STAGE_ORDER:
             return
+        old_stage = self.school_stage
         self.school_stage = stage
         self._spec = get_quality_spec(stage)
         self._steps_in_stage = 0
         self._episodes_since_exam = 0
+        # 升学时按需用 API 增强新学段语料（懒加载，每学段只增强一次）
+        if stage != old_stage:
+            self.corpus._load_stage_curriculum(stage)
 
     # ----- 社会事件与角色 -----
     def _pick_slot(self) -> DaySlot:
@@ -472,6 +488,8 @@ class SocietySimWorld(Environment):
             self._steps_in_stage = 0
             self._episodes_since_exam = 0
             self._spec = get_quality_spec(self.school_stage)
+            # 升学时按需用 API 增强新学段语料（懒加载）
+            self.corpus._load_stage_curriculum(nxt)
             return True
         return False
 

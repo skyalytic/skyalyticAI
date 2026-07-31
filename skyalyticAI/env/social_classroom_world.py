@@ -106,4 +106,6 @@ class SocialClassroomWorld(HumanGrowthWorld):
         self._steps_in_stage = 0
         self._episodes_since_exam = 0
         self._exam_suite.set_stage(nxt)
+        # 升学时按需用 API 增强新学段语料（懒加载）
+        self.corpus._load_stage_curriculum(nxt)
         return True

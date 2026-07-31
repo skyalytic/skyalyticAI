@@ -804,27 +804,46 @@ class NIEABrain:
             state_part = hidden_state[:self.metacognition.input_dim - 3]
             meta_input = np.concatenate([state_part, meta_features])
 
+        import time as _t
+        _dbg = not getattr(self, "_dbg_logged", False)
+
+        if _dbg: _t0 = _t.time()
         meta_result = self.metacognition.forward(meta_input)
+        if _dbg: print(f"[think] metacognition: {_t.time()-_t0:.3f}s", flush=True)
         confidence = meta_result["confidence"]
 
         curiosity = self.pcn.get_prediction_uncertainty()
 
+        if _dbg: _t0 = _t.time()
         self.active_inference.perceive(hidden_state)
+        if _dbg: print(f"[think] active_inference.perceive: {_t.time()-_t0:.3f}s", flush=True)
+        if _dbg: _t0 = _t.time()
         action, qualities, action_probs = self.active_inference.select_action()
+        if _dbg: print(f"[think] select_action: {_t.time()-_t0:.3f}s", flush=True)
 
+        if _dbg: _t0 = _t.time()
         memory_context = self._query_memory(hidden_state)
+        if _dbg: print(f"[think] query_memory: {_t.time()-_t0:.3f}s", flush=True)
 
         imagined_outcomes = None
         if prefer_speech and self.language_head is not None:
+            if _dbg: _t0 = _t.time()
             action = self.speak(hidden_state)
+            if _dbg: print(f"[think] speak: {_t.time()-_t0:.3f}s", flush=True)
         else:
+            if _dbg: _t0 = _t.time()
             imagined_outcomes = self._imagine_action_outcomes(hidden_state)
+            if _dbg: print(f"[think] imagine: {_t.time()-_t0:.3f}s", flush=True)
 
+            if _dbg: _t0 = _t.time()
             preferred_action = self._select_action_from_imagination(
                 imagined_outcomes, confidence, curiosity
             )
+            if _dbg: print(f"[think] select_from_imagination: {_t.time()-_t0:.3f}s", flush=True)
             if preferred_action is not None:
                 action = preferred_action
+
+        self._dbg_logged = True
 
         self.global_workspace.submit_bid(0, float(np.mean(np.abs(hidden_state))), hidden_state.copy())
         # GlobalWorkspace 的 PCN 投标应反映底层感知惊讶（prediction_errors[0]），
@@ -1152,6 +1171,38 @@ class NIEABrain:
                             results.append((assoc_key, 0.5))
 
         return results
+
+    def query_memory_action(self, state: np.ndarray) -> Optional[int]:
+        """
+        查询 HDC 记忆，返回最相似状态的关联动作索引。
+
+        用于论文第4章：HDC 检索准确率评估。
+        若记忆为空或检索失败，返回 None。
+        """
+        if len(self.hd_memory.item_memory) == 0:
+            return None
+        state_vec = np.sign(state[: self.hd_memory.dim])
+        if state_vec.shape[0] < self.hd_memory.dim:
+            padded = np.zeros(self.hd_memory.dim, dtype=np.float64)
+            padded[: state_vec.shape[0]] = state_vec
+            state_vec = padded
+        results = self.hd_memory.retrieve(state_vec, top_k=1)
+        if not results:
+            return None
+        best_key, best_sim = results[0]
+        # 检索关联动作
+        assoc_key = best_key + "__action"
+        if assoc_key in self.hd_memory.associative_memory:
+            assoc_val = self.hd_memory.retrieve_association(assoc_key)
+            if assoc_val is not None and isinstance(assoc_val, tuple):
+                action_name = assoc_val[0]
+                # action_key 格式为 "action_{index}"
+                if action_name.startswith("action_"):
+                    try:
+                        return int(action_name.split("_")[1])
+                    except (ValueError, IndexError):
+                        return None
+        return None
 
     def _store_to_memory(
         self,

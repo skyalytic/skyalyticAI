@@ -27,6 +27,7 @@ class RetentionResult:
     accuracy: float
     historical_best: float
     forgetting: float
+    hdc_retrieval_accuracy: float = 0.0
 
 
 class AcceptanceReportBuilder:
@@ -43,7 +44,11 @@ class AcceptanceReportBuilder:
         trainer: Any,
         stage: str,
         n_questions: Optional[int] = None,
-    ) -> float:
+    ) -> tuple:
+        """评估指定学段考试准确率与 HDC 检索准确率。
+
+        返回 (exam_accuracy, hdc_retrieval_accuracy)。
+        """
         env = trainer.human_env
         spec = get_quality_spec(stage)
         eval_env = ExamSuite(
@@ -55,6 +60,8 @@ class AcceptanceReportBuilder:
         obs = eval_env.reset()
         total = 0
         correct = 0
+        hdc_total = 0
+        hdc_correct = 0
         # 评估会调用 perceive，从而更新 Welford 输入归一化统计量；
         # 保存以便评估后恢复，避免考试数据污染训练分布。
         norm_state = trainer.brain.save_normalization_state()
@@ -62,16 +69,28 @@ class AcceptanceReportBuilder:
             for _ in range(max(10, spec.steps_per_episode)):
                 hidden, _, _ = trainer._perceive_observation(obs)
                 action = trainer.brain.speak(hidden) if trainer.brain.language_head else 0
+                # HDC 检索准确率：查询记忆中最相似状态的关联动作
+                hdc_action = trainer.brain.query_memory_action(hidden)
                 obs, _, done, info = eval_env.step(action)
                 if "correct" in info:
                     total += 1
                     if info["correct"]:
                         correct += 1
+                    # HDC 检索评估：仅当记忆中有数据时计数
+                    if hdc_action is not None:
+                        hdc_total += 1
+                        target_char = info.get("target_char", "")
+                        if target_char:
+                            tid = env.corpus.char_to_index(target_char)
+                            if hdc_action == tid:
+                                hdc_correct += 1
                 if done:
                     break
         finally:
             trainer.brain.restore_normalization_state(norm_state)
-        return float(correct / max(total, 1))
+        exam_acc = float(correct / max(total, 1))
+        hdc_acc = float(hdc_correct / max(hdc_total, 1)) if hdc_total > 0 else 0.0
+        return (exam_acc, hdc_acc)
 
     def evaluate_retention(self, trainer: Any, up_to_stage: str) -> List[RetentionResult]:
         results: List[RetentionResult] = []
@@ -81,16 +100,17 @@ class AcceptanceReportBuilder:
         for stage in STAGE_ORDER[: idx + 1]:
             if stage == "sensorimotor":
                 continue
-            acc = self.evaluate_stage_exam(trainer, stage)
-            best = max(self.best_stage_accuracy.get(stage, 0.0), acc)
+            exam_acc, hdc_acc = self.evaluate_stage_exam(trainer, stage)
+            best = max(self.best_stage_accuracy.get(stage, 0.0), exam_acc)
             self.best_stage_accuracy[stage] = best
-            self.latest_stage_accuracy[stage] = acc
+            self.latest_stage_accuracy[stage] = exam_acc
             results.append(
                 RetentionResult(
                     stage=stage,
-                    accuracy=acc,
+                    accuracy=exam_acc,
                     historical_best=best,
-                    forgetting=max(0.0, best - acc),
+                    forgetting=max(0.0, best - exam_acc),
+                    hdc_retrieval_accuracy=hdc_acc,
                 )
             )
         self.retention_history.append(

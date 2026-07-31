@@ -119,11 +119,15 @@ class HumanGrowthWorld(Environment):
     def set_stage(self, stage: str) -> None:
         if stage not in STAGE_ORDER:
             return
+        old_stage = self.school_stage
         self.school_stage = stage
         self._spec = get_quality_spec(stage)
         self._steps_in_stage = 0
         self._episodes_since_exam = 0
         self._exam_suite.set_stage(stage)
+        # 升学时按需用 API 增强新学段语料（懒加载，每学段只增强一次）
+        if stage != old_stage:
+            self.corpus._load_stage_curriculum(stage)
 
     # ----- 内部逻辑 -----
 
@@ -175,6 +179,8 @@ class HumanGrowthWorld(Environment):
         self._steps_in_stage = 0
         self._episodes_since_exam = 0
         self._exam_suite.set_stage(nxt)
+        # 升学时按需用 API 增强新学段语料（懒加载）
+        self.corpus._load_stage_curriculum(nxt)
         return True
 
     # ----- 环境主接口 -----

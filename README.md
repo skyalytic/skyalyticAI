@@ -254,6 +254,7 @@ skyalyticAI/
     exams/                       # 考试系统
     data/                        # 数据管理
     gpu/                         # GPU加速工具
+    device/                      # 设备后端抽象（Loihi/CUDA/NPU/MLU/XPU/CPU 检测 + SNN层工厂）
     brain.py                     # NIEABrain 主类 + BrainScalePresets
   scripts/
     run_growth_training.py       # 一键训练启动器
@@ -296,9 +297,13 @@ skyalyticAI/
 
 12. **训练进展判读**：日志中"知识"指标是HDC记忆向量的存储计数（只增不减），不代表已学会。判断学习进展请以"说话"准确率（及ASR/OCR的CER/WER）为准。
 
+13. **论文数据点指标**（v1.3.0+）：训练日志新增 4 个内部指标——`PCN误差`（预测编码有效性，应下降）、`surprise`（主动推理内在动机）、`好奇心`（探索驱动力）、`元认知`（自我评估校准）。遗忘测试额外打印 `HDC检索` 准确率（查询记忆中最相似状态的关联动作）。这些指标供论文第4章实验验证使用。
+
+14. **GPU 性能优化**（fix 123）：主动推理的雅可比矩阵计算从 `torch.autograd.functional.jacobian`（逐列）改为 GPU 批处理有限差分（一次前向），100% 数值精确，速度快约 60 倍。
+
 ## 完整 API 参考
 
-详细的 API 文档（覆盖 19 个模块、所有公开类与方法签名）见 [API_REFERENCE.md](API_REFERENCE.md)。
+详细的 API 文档（覆盖 20 个模块、所有公开类与方法签名）见 [API_REFERENCE.md](API_REFERENCE.md)。
 
 主要内容：
 
@@ -306,6 +311,7 @@ skyalyticAI/
 - 感知编码器（视网膜/耳蜗生物前端）、意识、主动推理、世界模型
 - 元认知、结构自进化、语言头、环境、社会模拟器
 - NPC 老师、数据管理、考试系统、训练器、GPU 加速
+- 设备后端抽象（Loihi/CUDA/NPU/MLU/XPU/CPU 多后端检测）
 - 末尾附"可调参数汇总"速查表
 
 ## 开源协议

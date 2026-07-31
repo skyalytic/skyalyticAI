@@ -58,11 +58,18 @@ class HumanGrowthTrainer(NIEATrainer):
     def _run_episode(self, episode: int) -> Dict[str, Any]:
         import time as _time
 
+        if episode == 0:
+            print("[ep0] _run_episode 开始", flush=True)
+
         self.human_env.set_rolling_speech_accuracy(self._rolling_speech_accuracy())
         self.human_env.set_rolling_subject_accuracy(self._rolling_subject_accuracy())
         max_steps = self.human_env.get_steps_per_episode()
 
+        if episode == 0:
+            print("[ep0] 准备 reset", flush=True)
         obs = self.env.reset()
+        if episode == 0:
+            print("[ep0] reset 完成", flush=True)
         self.brain.reset_episode()
         self.brain.set_school_stage(self.human_env.school_stage)
 
@@ -76,21 +83,36 @@ class HumanGrowthTrainer(NIEATrainer):
         episode_start_time = _time.time()
         step_log_interval = max(1, max_steps // 10)
 
+        if episode == 0:
+            print(f"[ep0] 进入训练循环, max_steps={max_steps}", flush=True)
+
         for step in range(max_steps):
+            if episode == 0:
+                t0 = _time.time()
             hidden, prediction, prediction_error = self._perceive_observation(obs)
+            if episode == 0 and step == 0:
+                print(f"[ep0] step0 perceive 完成: {_time.time()-t0:.3f}s", flush=True)
 
             activity = getattr(self.human_env, "_activity", None)
             activity_val = activity.value if activity is not None else "motor"
             prefer_speech = activity_val in ("reading", "exam")
 
+            if episode == 0 and step == 0:
+                t1 = _time.time()
             thought = self.brain.think(
                 hidden,
                 external_reward=prev_env_reward,
                 prefer_speech=prefer_speech,
             )
             action = thought["action"]
+            if episode == 0 and step == 0:
+                print(f"[ep0] step0 think 完成: {_time.time()-t1:.3f}s", flush=True)
 
+            if episode == 0 and step == 0:
+                t2 = _time.time()
             next_obs, env_reward, done, info = self.env.step(action)
+            if episode == 0 and step == 0:
+                print(f"[ep0] step0 env.step 完成: {_time.time()-t2:.3f}s", flush=True)
 
             if info.get("mode") in ("text", "exam") or info.get("activity") in (
                 "reading",
@@ -191,7 +213,17 @@ class HumanGrowthTrainer(NIEATrainer):
                 break
 
         if (episode + 1) % self._retention_eval_interval == 0:
-            self._report_builder.evaluate_retention(self, self.human_env.school_stage)
+            retention = self._report_builder.evaluate_retention(
+                self, self.human_env.school_stage
+            )
+            # 论文第4章数据点：打印 HDC 检索准确率
+            for r in retention:
+                print(
+                    f"  [遗忘测试] {r.stage}: 考试准确率={r.accuracy:.1%} "
+                    f"HDC检索={r.hdc_retrieval_accuracy:.1%} "
+                    f"遗忘={r.forgetting:.1%}",
+                    flush=True,
+                )
             # 周期性考试同样会污染 PCN 保存状态与隐状态，需清理
             self.brain._saved_pcn_state = None
             self.brain.pcn.reset()
@@ -209,9 +241,17 @@ class HumanGrowthTrainer(NIEATrainer):
         avg_reward = np.mean(self.episode_rewards[-window:])
         brain_summary = self.brain.get_state_summary()
         subj = self.human_env._current_subject or "-"
+        # 论文第4章数据点：PCN预测误差 + 好奇心 + 元认知校准 + surprise
+        avg_surprise = (
+            float(np.mean(self.episode_surprises[-window:]))
+            if self.episode_surprises
+            else 0.0
+        )
         print(
             "Episode {}/{} | 奖励: {:.2f} | 阶段: {} ({}) | 科目: {} | "
-            "知识: {} | 说话: {:.1%} | 升学: {}".format(
+            "知识: {} | 说话: {:.1%} | 升学: {} | "
+            "PCN误差: {:.4f} | surprise: {:.4f} | "
+            "好奇心: {:.4f} | 元认知: {:.4f}".format(
                 episode + 1,
                 self.max_episodes,
                 avg_reward,
@@ -221,6 +261,10 @@ class HumanGrowthTrainer(NIEATrainer):
                 brain_summary["knowledge_vectors"],
                 self._rolling_speech_accuracy(),
                 self._promotions,
+                brain_summary["avg_prediction_error"],
+                avg_surprise,
+                brain_summary["curiosity"],
+                brain_summary["confidence_calibration"],
             )
         )
 

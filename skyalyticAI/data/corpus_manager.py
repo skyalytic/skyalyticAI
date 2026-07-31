@@ -58,6 +58,8 @@ class CorpusManager:
         self._file_count: int = 0
         self._npc_curriculum: bool = False
         self._teacher: Optional[TeacherNPC] = None
+        # 已用 API 增强过的学段集合（避免重复调用 API 限流）
+        self._loaded_stages: set = set()
 
         self._load_all()
 
@@ -97,6 +99,11 @@ class CorpusManager:
         if not all_chars:
             self._npc_curriculum = True
             self._teacher = TeacherNPC(seed=int(self.rng.integers(0, 10_000)))
+            # fix 122 懒加载：初始化时临时禁用 API，用模板快速生成全部学段语料。
+            # 原设计在初始化时调 API 生成 10320 句，限流 10RPM 需 17 小时。
+            # 改为：初始化用模板秒级生成（构建完整词表），教学时 API 按需增强。
+            _saved_service = self._teacher.service
+            self._teacher.service = None
             for stage in STAGE_ORDER:
                 subjects = subjects_for_stage(stage)
                 if stage in UNIVERSITY_STAGES and not subjects:
@@ -110,6 +117,7 @@ class CorpusManager:
                         raw_by_stage[stage].append(line)
                         key_buckets[(stage, subj)].append(line)
                         all_chars.extend(list(line))
+            self._teacher.service = _saved_service  # 恢复，教学时可用 API
             all_chars.extend(list(self._teacher.bootstrap_vocab_text()))
 
         self._build_vocab(all_chars)
@@ -143,6 +151,68 @@ class CorpusManager:
                     self._keys_by_stage[stage].append(s)
             if self._npc_curriculum and not self._keys_by_stage[stage]:
                 self._keys_by_stage[stage].append("通识")
+
+    def _load_stage_curriculum(self, stage: str) -> None:
+        """升学时按需用 API 增强当前学段语料（懒加载）。
+
+        初始化时已用模板生成全部学段语料（构建词表，秒级完成），
+        此处用 API 生成少量更丰富的教学句子补充到训练/考试池。
+        若 API 不可用则静默跳过（模板语料已足够训练）。
+        每个学段只增强一次，避免重复调用 API 限流。
+        """
+        if stage not in STAGE_ORDER:
+            return
+        if stage in self._loaded_stages:
+            return
+        # 标记已加载，无论 API 是否可用都避免重复尝试
+        self._loaded_stages.add(stage)
+        if not self._npc_curriculum or self._teacher is None:
+            return
+        if self._teacher.service is None:
+            return
+
+        subjects = subjects_for_stage(stage)
+        if stage in UNIVERSITY_STAGES and not subjects:
+            subjects = list(DEFAULT_MAJORS)
+        if not subjects:
+            subjects = ["通识"]
+
+        import time as _time
+        _t0 = _time.time()
+        print(
+            f"[Corpus] 升学增强 {stage}：{len(subjects)}科 × 20句/科 "
+            f"= {len(subjects) * 20} 次 API 调用...",
+            flush=True,
+        )
+
+        # 每科生成少量 API 增强句子（避免限流）
+        batch_per_subject = 20
+        new_train: List[str] = []
+        new_exam: List[str] = []
+        for subj in subjects:
+            for _ in range(batch_per_subject):
+                try:
+                    line = self._teacher.sample_teaching_line(stage, subj)
+                except Exception:
+                    continue
+                if not line:
+                    continue
+                if self.rng.random() < 0.8:
+                    self._train_by_key.setdefault((stage, subj), []).append(line)
+                    new_train.append(line)
+                else:
+                    new_exam.append(line)
+
+        if new_train:
+            self._train_by_stage.setdefault(stage, []).extend(new_train)
+        if new_exam:
+            self._exam_by_stage.setdefault(stage, []).extend(new_exam)
+
+        print(
+            f"[Corpus] {stage} 增强完成：+{len(new_train)}训练句 "
+            f"+{len(new_exam)}考试句，用时{_time.time()-_t0:.1f}s",
+            flush=True,
+        )
 
     def _build_vocab(self, chars: Sequence[str]) -> None:
         counter = Counter(chars)
@@ -192,8 +262,8 @@ class CorpusManager:
         return str(self.rng.choice(keys, p=w))
 
     def sample_training_line(self, stage: str, subject: Optional[str] = None) -> str:
-        if self._npc_curriculum and self._teacher is not None:
-            return self._teacher.sample_teaching_line(stage, subject)
+        # 优先从缓存池取（初始化模板 + 升学时 API 增强的语料），
+        # 避免每步训练都调 API 导致限流
         if subject and (stage, subject) in self._train_by_key:
             pool = self._train_by_key[(stage, subject)]
             if pool:
@@ -205,28 +275,44 @@ class CorpusManager:
                 if pool:
                     return self.rng.choice(pool)
         pool = self._train_by_stage.get(stage, [])
-        if not pool:
-            pool = _builtin_sensorimotor_lines()
-        return self.rng.choice(pool)
+        if pool:
+            return self.rng.choice(pool)
+        # 池为空时回退到 NPC API 实时生成
+        if self._npc_curriculum and self._teacher is not None:
+            return self._teacher.sample_teaching_line(stage, subject)
+        return self.rng.choice(_builtin_sensorimotor_lines())
 
     def get_exam_lines(self, stage: str, n: int = 20) -> List[str]:
+        if n <= 0:
+            return []
+        # 优先从缓存考试池取（初始化模板 + API 增强的语料）
+        pool = self._exam_by_stage.get(stage, [])
+        if pool:
+            n_use = min(n, len(pool))
+            idx = self.rng.choice(len(pool), size=n_use, replace=False)
+            out = [pool[int(i)] for i in idx]
+            if len(out) >= n:
+                return out
+            # 不够则补充训练池
+            train_pool = self._train_by_stage.get(stage, [])
+            need = n - len(out)
+            if train_pool:
+                idx2 = self.rng.choice(len(train_pool), size=min(need, len(train_pool)), replace=False)
+                out.extend(train_pool[int(i)] for i in idx2)
+            return out
+        # 考试池为空：回退到 NPC API 实时生成
         if self._npc_curriculum and self._teacher is not None:
-            # 考试文本也来自老师（更贴近"上课教出来的"）
-            if n <= 0:
-                return []
             out = []
             subjects = self.list_subjects(stage) or ["通识"]
             for _ in range(n):
                 subj = str(self.rng.choice(subjects))
                 out.append(self._teacher.sample_teaching_line(stage, subj))
             return out
-        pool = self._exam_by_stage.get(stage, [])
-        if not pool:
-            pool = self._train_by_stage.get(stage, _builtin_sensorimotor_lines())
-        n = min(n, len(pool))
-        if n <= 0:
+        pool = self._train_by_stage.get(stage, _builtin_sensorimotor_lines())
+        n_use = min(n, len(pool))
+        if n_use <= 0:
             return []
-        idx = self.rng.choice(len(pool), size=n, replace=False)
+        idx = self.rng.choice(len(pool), size=n_use, replace=False)
         return [pool[int(i)] for i in idx]
 
     def stage_display_name(self, stage: str) -> str:

@@ -32,6 +32,9 @@
 - `learn_ocr(hidden_state, target_index, reward) -> dict` OCR 学习
 - `develop() -> None` 结构发育（突触修剪/神经元生长）
 
+**记忆检索**
+- `query_memory_action(state) -> int or None` 查询 HDC 记忆中最相似状态的关联动作（论文第4章 HDC 检索准确率评估）
+
 **阶段控制**
 - `set_school_stage(stage) -> None` 设置学段
 
@@ -421,12 +424,17 @@ NPC 角色定义
 
 ### class AcceptanceReportBuilder (`acceptance_report.py`)
 验收报告生成器
-- `evaluate_retention(trainer, stage) -> RetentionResult` 评估遗忘
+- `evaluate_stage_exam(trainer, stage) -> (exam_acc, hdc_acc)` 评估学段考试与 HDC 检索准确率（返回元组）
+- `evaluate_retention(trainer, stage) -> List[RetentionResult]` 评估遗忘
 - `should_rollback_promotion(retention) -> bool` 是否回滚升学
 - `generate_report(trainer) -> dict` 生成完整验收报告
 
 ### class RetentionResult (`acceptance_report.py`)
 遗忘回测结果
+- `accuracy: float` 考试准确率
+- `historical_best: float` 历史最佳
+- `forgetting: float` 遗忘量
+- `hdc_retrieval_accuracy: float` HDC 检索准确率（论文第4章数据点）
 
 ### 文本指标 (`text_metrics.py`)
 - `edit_distance(a, b) -> int` 编辑距离
@@ -450,6 +458,25 @@ GPU 批处理器
 - `batch_conv2d(x, kernel) / batch_fft(x)` 卷积/FFT
 - `batch_softmax(x) -> np.ndarray` Softmax
 - `transfer_weights_to_gpu(weights) / transfer_weights_from_gpu()` 权重传输
+
+---
+
+## 20. 设备后端抽象 — `skyalyticAI.device`
+
+多后端硬件检测（Loihi / CUDA / NPU / MLU / XPU / CPU）与 SNN 层工厂模式。当对应依赖未安装时自动降级到 CPU。
+
+### 函数 (`detector.py`)
+- `detect_backend() -> str` 检测最优后端（返回 "loihi"/"cuda"/"npu"/"mlu"/"xpu"/"cpu"）
+- `get_device() -> Any` 获取对应后端的 device 对象（如 `torch.device("cuda")`）
+- `get_backend_info() -> str` 后端可读描述（如 "CUDA: NVIDIA RTX 5070 (11.9 GB)"）
+- `is_backend_available(name) -> bool` 指定后端是否可用
+
+### 函数 (`backend_factory.py`)
+- `create_snn_layer(backend, input_dim, output_dim, **kwargs) -> SNNLayer or LoihiSNNLayer` 根据后端创建 SNN 层实例（Loihi 后端抛 `NotImplementedError`）
+
+### class LoihiSNNLayer (`backend_factory.py`)
+Loihi 神经形态芯片 SNN 层占位类（Intel Loihi 未实际接入时使用）
+- `forward(*args, **kwargs)` / `step(*args, **kwargs)` / `reset()`
 
 ---
 

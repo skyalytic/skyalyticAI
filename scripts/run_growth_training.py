@@ -168,13 +168,17 @@ def main() -> None:
         device = "cpu"
 
     print("正在初始化训练环境...")
+    import time as _time
 
     if mode == "society":
+        _t0 = _time.time()
         from skyalyticAI.society.sim_world import SocietySimWorld
         from skyalyticAI.perception.retina_encoder import RetinaEncoder
         from skyalyticAI.perception.cochlea_encoder import CochleaEncoder
         from skyalyticAI.perception.multimodal_fusion import MultimodalFusion
+        print(f"[init] import 感知模块完成: {_time.time()-_t0:.1f}s")
 
+        _t0 = _time.time()
         env = SocietySimWorld(
             corpus_root=None,
             observation_dim=128,
@@ -183,7 +187,10 @@ def main() -> None:
             student_name="小析",
             seed=42,
         )
+        print(f"[init] SocietySimWorld 完成: {_time.time()-_t0:.1f}s")
+
         # fix 119 生物前端：视网膜/耳蜗脉冲编码（无预训练、前端不学习，学习在皮层）
+        _t0 = _time.time()
         visual_encoder = RetinaEncoder(
             ganglion_rows=16,
             ganglion_cols=16,
@@ -191,6 +198,9 @@ def main() -> None:
             output_dim=128,
             seed=42,
         )
+        print(f"[init] RetinaEncoder 完成: {_time.time()-_t0:.1f}s")
+
+        _t0 = _time.time()
         audio_encoder = CochleaEncoder(
             n_fibers=64,
             sample_rate=16000,
@@ -198,10 +208,14 @@ def main() -> None:
             output_dim=128,
             seed=42,
         )
+        print(f"[init] CochleaEncoder 完成: {_time.time()-_t0:.1f}s")
+
+        _t0 = _time.time()
         fusion = MultimodalFusion(
             modality_dims={"visual": 128, "audio": 128},
             output_dim=128,
         )
+        print(f"[init] MultimodalFusion 完成: {_time.time()-_t0:.1f}s")
     elif mode == "social":
         from skyalyticAI.env.social_classroom_world import SocialClassroomWorld
 
@@ -226,7 +240,11 @@ def main() -> None:
         if start_stage != max_stage:
             pass
 
+    _t0 = _time.time()
     vocab = env.get_action_dim()
+    print(f"[init] vocab={vocab}: {_time.time()-_t0:.1f}s")
+
+    _t0 = _time.time()
     brain = NIEABrain(
         input_dim=env.get_observation_dim(),
         action_dim=vocab,
@@ -237,7 +255,9 @@ def main() -> None:
         device=device,
         brain_scale=brain_scale,
     )
+    print(f"[init] NIEABrain 完成: {_time.time()-_t0:.1f}s")
 
+    _t0 = _time.time()
     trainer = HumanGrowthTrainer(
         brain=brain,
         env=env,  # type: ignore
@@ -248,6 +268,7 @@ def main() -> None:
         log_interval=log_interval,
         forgetting_threshold=0.05,
     )
+    print(f"[init] Trainer 完成: {_time.time()-_t0:.1f}s")
 
     if resume and latest is not None and latest.exists():
         try:
