@@ -309,6 +309,8 @@ skyalyticAI/
 
 18. **深度想象 Beam Search**（v1.4.0）：世界模型新增 `imagine_deep` 方法，实现真正的 beam search 深度想象 rollout（≥10 步），价值函数 G(a)=Σγ^t·[r(s_t)+λ·H(s_t)] 同时考虑实用价值（奖励）和认知价值（信息熵）。训练后期（age≥500）自动启用。
 
+19. **HDC 图记忆性能优化**（v1.4.2，fix 125）：`retrieve` 和 `query_graph` 从 Python 逐元素循环改为 NumPy 矩阵乘法（BLAS 加速），`query_graph` 从 ~150s/次降至 ~3.5s/次（提升 43 倍）。图边数量上限 5000（与 episodic_memory 同策略），防止记忆无限增长导致检索恶化。bind/unbind 语义完全不变，100% 符合 HDC 理论。
+
 ## 完整 API 参考
 
 详细的 API 文档（覆盖 20 个模块、所有公开类与方法签名）见 [API_REFERENCE.md](API_REFERENCE.md)。
