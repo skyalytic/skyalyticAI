@@ -87,33 +87,29 @@ class HumanGrowthTrainer(NIEATrainer):
             print(f"[ep0] 进入训练循环, max_steps={max_steps}", flush=True)
 
         for step in range(max_steps):
-            if episode == 0:
-                t0 = _time.time()
+            _step_t = {}
+            _t0 = _time.time()
             hidden, prediction, prediction_error = self._perceive_observation(obs)
-            if episode == 0 and step == 0:
-                print(f"[ep0] step0 perceive 完成: {_time.time()-t0:.3f}s", flush=True)
+            _step_t["perceive1"] = _time.time() - _t0
 
             activity = getattr(self.human_env, "_activity", None)
             activity_val = activity.value if activity is not None else "motor"
             prefer_speech = activity_val in ("reading", "exam")
 
-            if episode == 0 and step == 0:
-                t1 = _time.time()
+            _t0 = _time.time()
             thought = self.brain.think(
                 hidden,
                 external_reward=prev_env_reward,
                 prefer_speech=prefer_speech,
             )
             action = thought["action"]
-            if episode == 0 and step == 0:
-                print(f"[ep0] step0 think 完成: {_time.time()-t1:.3f}s", flush=True)
+            _step_t["think"] = _time.time() - _t0
 
-            if episode == 0 and step == 0:
-                t2 = _time.time()
+            _t0 = _time.time()
             next_obs, env_reward, done, info = self.env.step(action)
-            if episode == 0 and step == 0:
-                print(f"[ep0] step0 env.step 完成: {_time.time()-t2:.3f}s", flush=True)
+            _step_t["env_step"] = _time.time() - _t0
 
+            _t0 = _time.time()
             if info.get("mode") in ("text", "exam") or info.get("activity") in (
                 "reading",
                 "exam",
@@ -156,6 +152,7 @@ class HumanGrowthTrainer(NIEATrainer):
                     self._ocr_cer_hist.append(cer(pred_ocr, target_char))
                     self._asr_wer_hist.append(wer(pred_asr, target_char))
                     self._ocr_wer_hist.append(wer(pred_ocr, target_char))
+            _step_t["speech_asr"] = _time.time() - _t0
 
             intrinsic_reward = 0.0
             if self.reward_shaping:
@@ -163,7 +160,11 @@ class HumanGrowthTrainer(NIEATrainer):
                 intrinsic_reward = self.curiosity_weight * surprise
                 total_surprise += surprise
 
-            next_hidden, _, _ = self._perceive_observation(next_obs)
+            _t0 = _time.time()
+            next_hidden = self._perceive_observation(next_obs, encode_only=True)
+            _step_t["perceive2"] = _time.time() - _t0
+
+            _t0 = _time.time()
             self.brain.learn(
                 hidden,
                 action,
@@ -172,7 +173,11 @@ class HumanGrowthTrainer(NIEATrainer):
                 prediction_error,
                 env_reward=env_reward,
             )
+            _step_t["learn"] = _time.time() - _t0
+
+            _t0 = _time.time()
             self.brain.develop()
+            _step_t["develop"] = _time.time() - _t0
             self.brain.set_school_stage(self.human_env.school_stage)
 
             # fix 120：升学信号在每轮结束时即下发（done 恒为 False），无需 done 条件
@@ -196,6 +201,12 @@ class HumanGrowthTrainer(NIEATrainer):
             steps += 1
             self.total_steps += 1
             obs = next_obs
+
+            # 计时日志（前10步 + 每100步）
+            if self.total_steps <= 10 or self.total_steps % 100 == 0:
+                total_step = sum(_step_t.values())
+                parts = " ".join(f"{k}={v:.3f}s" for k, v in _step_t.items() if v > 0.001)
+                print(f"[step] total={total_step:.3f}s | {parts}", flush=True)
 
             # 步级进度输出：每 10% 打印一次
             if step > 0 and (step + 1) % step_log_interval == 0:

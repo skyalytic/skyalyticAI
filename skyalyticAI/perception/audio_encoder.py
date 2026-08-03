@@ -171,23 +171,23 @@ class AudioEncoder:
 
         window = np.hamming(self.fft_size)
 
-        mel_features = np.zeros((n_frames, self.n_mels), dtype=np.float64)
+        # 向量化 STFT：一次性提取所有帧，批量 FFT
+        # 生成帧索引矩阵 (n_frames, fft_size)
+        frame_starts = np.arange(n_frames) * self.hop_length
+        indices = frame_starts[:, None] + np.arange(self.fft_size)[None, :]
+        # 处理越界：填充到足够长度
+        padded_emphasized = np.pad(emphasized, (0, max(0, n_frames * self.hop_length + self.fft_size - len(emphasized))))
+        frames = padded_emphasized[indices]  # (n_frames, fft_size)
+        frames = frames * window  # 广播乘窗
 
-        for i in range(n_frames):
-            start = i * self.hop_length
-            frame = emphasized[start:start + self.fft_size]
+        # 批量 FFT
+        spectra = np.fft.rfft(frames, n=self.fft_size, axis=1)  # (n_frames, n_freqs)
+        power_spectra = (np.abs(spectra) ** 2) / self.fft_size  # (n_frames, n_freqs)
 
-            if len(frame) < self.fft_size:
-                frame = np.pad(frame, (0, self.fft_size - len(frame)))
-
-            frame = frame * window
-
-            spectrum = np.fft.rfft(frame, n=self.fft_size)
-            power_spectrum = np.abs(spectrum) ** 2 / self.fft_size
-
-            mel_spectrum = self.mel_filterbank @ power_spectrum
-            mel_spectrum = np.maximum(mel_spectrum, 1e-10)
-            mel_features[i] = np.log(mel_spectrum)
+        # 批量 Mel 滤波
+        mel_spectra = power_spectra @ self.mel_filterbank.T  # (n_frames, n_mels)
+        mel_spectra = np.maximum(mel_spectra, 1e-10)
+        mel_features = np.log(mel_spectra)  # (n_frames, n_mels)
 
         avg_mel = np.mean(mel_features, axis=0)
 

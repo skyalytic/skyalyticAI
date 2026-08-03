@@ -97,11 +97,17 @@ class HDCMemory:
         self.graph_edges: Dict[str, np.ndarray] = {}
         # 图边数量上限（与 episodic_memory 同策略，防止无限增长导致检索变慢）
         self.max_graph_edges: int = 5000
+        # 按 relation 分桶的图边索引（存储时维护，检索时零字符串解析）
+        # relation_name -> [(edge_key, target_name), ...]
+        self._edges_by_relation: Dict[str, List[Tuple[str, str]]] = {}
 
         self._permutation: Optional[np.ndarray] = None
-        # item_memory 矩阵缓存（向量化检索加速，dirty 标记追踪失效）
-        self._item_matrix_cache: Optional[Tuple[List[str], np.ndarray]] = None
+        # item_memory 矩阵缓存（预分配 + 增量填充，dirty 标记追踪失效）
+        # 存储 (names, matrix, norms, count) 四元组，matrix 预分配 2x 容量
+        self._item_matrix_cache: Optional[Tuple[List[str], np.ndarray, np.ndarray, int]] = None
         self._item_matrix_dirty: bool = True
+        # 概念覆盖标记：若 add_concept 覆盖已存在概念，强制全量重建
+        self._item_overwritten: bool = False
 
     def random_vector(self) -> np.ndarray:
         """
@@ -292,6 +298,11 @@ class HDCMemory:
                     f"Vector shape must be ({self.dim},), got {vector.shape}"
                 )
 
+        # 检测覆盖：若概念已存在且向量不同，标记全量重建
+        if name in self.item_memory:
+            old_vec = self.item_memory[name]
+            if not np.array_equal(old_vec, vector):
+                self._item_overwritten = True
         self.item_memory[name] = vector
         self._item_matrix_dirty = True
         return vector
@@ -379,22 +390,79 @@ class HDCMemory:
             return result[0]
         return None
 
-    def _build_item_matrix(self) -> Tuple[List[str], np.ndarray]:
-        """构建 item_memory 的矩阵缓存（向量化检索加速）。
+    def _build_item_matrix(self) -> Tuple[List[str], np.ndarray, np.ndarray, int]:
+        """构建 item_memory 的矩阵缓存（预分配 + 增量填充）。
 
-        当 item_memory 变化时（dirty）重新构建，否则返回缓存。
-        返回 (names, matrix)，matrix shape=(N, D)。
+        预分配策略：matrix 分配 2x 容量，新概念直接填入空行，
+        避免每次 vstack 复制整个矩阵（1.6GB → 0 复制）。
+        返回 (names, matrix, norms, count)，仅前 count 行有效。
         """
-        if self._item_matrix_dirty or self._item_matrix_cache is None:
+        if not self._item_matrix_dirty:
+            return self._item_matrix_cache
+
+        # 覆盖或无缓存：全量重建（预分配 2x 容量）
+        if self._item_overwritten or self._item_matrix_cache is None:
             names = list(self.item_memory.keys())
-            if names:
-                matrix = np.array(
-                    [self.item_memory[n] for n in names], dtype=np.float64
-                )
-            else:
-                matrix = np.empty((0, self.dim), dtype=np.float64)
-            self._item_matrix_cache = (names, matrix)
+            count = len(names)
+            capacity = max(1024, count * 2)
+            matrix = np.zeros((capacity, self.dim), dtype=np.float64)
+            norms = np.zeros(capacity, dtype=np.float64)
+            for i, name in enumerate(names):
+                vec = self.item_memory[name]
+                matrix[i] = vec
+                norms[i] = np.sqrt(np.dot(vec, vec))
+            self._item_matrix_cache = (names, matrix, norms, count)
+            self._item_overwritten = False
             self._item_matrix_dirty = False
+            return self._item_matrix_cache
+
+        # 增量追加：找出新概念
+        old_names, old_matrix, old_norms, old_count = self._item_matrix_cache
+        old_name_set = set(old_names)
+        new_names = [n for n in self.item_memory.keys() if n not in old_name_set]
+
+        if not new_names:
+            self._item_matrix_dirty = False
+            return self._item_matrix_cache
+
+        # 安全检查：概念数减少（删除），回退全量重建
+        if len(self.item_memory) < old_count:
+            names = list(self.item_memory.keys())
+            count = len(names)
+            capacity = max(1024, count * 2)
+            matrix = np.zeros((capacity, self.dim), dtype=np.float64)
+            norms = np.zeros(capacity, dtype=np.float64)
+            for i, name in enumerate(names):
+                vec = self.item_memory[name]
+                matrix[i] = vec
+                norms[i] = np.sqrt(np.dot(vec, vec))
+            self._item_matrix_cache = (names, matrix, norms, count)
+            self._item_matrix_dirty = False
+            return self._item_matrix_cache
+
+        # 检查容量，不足则扩容（2x）
+        capacity = old_matrix.shape[0]
+        needed = old_count + len(new_names)
+        if needed > capacity:
+            new_capacity = max(needed * 2, capacity * 2)
+            new_matrix = np.zeros((new_capacity, self.dim), dtype=np.float64)
+            new_norms = np.zeros(new_capacity, dtype=np.float64)
+            new_matrix[:old_count] = old_matrix[:old_count]
+            new_norms[:old_count] = old_norms[:old_count]
+            old_matrix = new_matrix
+            old_norms = new_norms
+
+        # 填入新概念（零拷贝：直接写入预分配行）
+        for i, name in enumerate(new_names):
+            idx = old_count + i
+            vec = self.item_memory[name]
+            old_matrix[idx] = vec
+            old_norms[idx] = np.sqrt(np.dot(vec, vec))
+
+        names = old_names + new_names
+        count = old_count + len(new_names)
+        self._item_matrix_cache = (names, old_matrix, old_norms, count)
+        self._item_matrix_dirty = False
         return self._item_matrix_cache
 
     def retrieve(
@@ -431,17 +499,18 @@ class HDCMemory:
         if not self.item_memory:
             return []
 
-        names, matrix = self._build_item_matrix()
+        names, matrix, norms, count = self._build_item_matrix()
         # 批量余弦相似度：sims = (M @ q) / (||M|| * ||q||)
-        norms = np.linalg.norm(matrix, axis=1)  # (N,)
+        # 仅使用前 count 行（预分配矩阵的有效部分）
         q_norm = np.linalg.norm(query_vector)
         if q_norm < 1e-16:
             return []
-        sims = (matrix @ query_vector) / (norms * q_norm + 1e-16)  # (N,)
+        m = matrix[:count]
+        n = norms[:count]
+        sims = (m @ query_vector) / (n * q_norm + 1e-16)  # (count,)
 
         # top_k 选择
-        n = len(names)
-        if top_k >= n:
+        if top_k >= count:
             top_idx = np.argsort(-sims)
         else:
             # argpartition 选 top_k，再局部排序
@@ -623,11 +692,28 @@ class HDCMemory:
         edge_vec = self.bind(self.bind(s_vec, r_vec), t_vec)
 
         edge_key = f"{source}|{relation}|{target}"
-        # 图边上限：超过时淘汰最旧的（与 episodic_memory 同策略）
-        if len(self.graph_edges) >= self.max_graph_edges:
+        is_new = edge_key not in self.graph_edges
+        # 图边上限：仅新边且超容量时淘汰最旧的（避免覆盖时误删）
+        if is_new and len(self.graph_edges) >= self.max_graph_edges:
             oldest_key = next(iter(self.graph_edges))
             del self.graph_edges[oldest_key]
+            # 同步从 _edges_by_relation 索引中移除
+            old_parts = oldest_key.split("|")
+            if len(old_parts) == 3:
+                old_rel = old_parts[1]
+                if old_rel in self._edges_by_relation:
+                    self._edges_by_relation[old_rel] = [
+                        (k, t) for (k, t) in self._edges_by_relation[old_rel]
+                        if k != oldest_key
+                    ]
+                    if not self._edges_by_relation[old_rel]:
+                        del self._edges_by_relation[old_rel]
         self.graph_edges[edge_key] = edge_vec.copy()
+        # 仅新边时添加索引条目（避免重复三元组产生重复索引）
+        if is_new:
+            if relation not in self._edges_by_relation:
+                self._edges_by_relation[relation] = []
+            self._edges_by_relation[relation].append((edge_key, target))
 
         return edge_vec
 
@@ -677,43 +763,56 @@ class HDCMemory:
         r_vec = self.item_memory[relation]
         query_vec = self.bind(s_vec, r_vec)  # (D,)
 
-        # 批量 unbind 所有边
-        # 理论：edge_vec = bind(bind(s, r), t)
-        #       unbind(edge_vec, bind(s, r)) = bind(edge_vec, query_vec) ≈ t
-        # 对 bipolar：unbind = bind = element-wise multiply
-        edge_keys = list(self.graph_edges.keys())
+        # ---- 用存储时维护的索引获取该 relation 的图边 ----
+        # 纯 HDC 原则：检索时零字符串解析，索引在 store_graph_edge 时已构建
+        # 这将 E 从全部图边(最多 5000)缩减到该 relation 下的子集
+        indexed = self._edges_by_relation.get(relation, [])
+        if not indexed:
+            return []
+
+        edge_keys = [k for (k, _) in indexed]
         edge_matrix = np.array(
             [self.graph_edges[k] for k in edge_keys], dtype=np.float64
-        )  # (E, D)
+        )  # (E_f, D)
+
         # 批量 unbind：edge_matrix * query_vec → t_approx_matrix
         if self.vector_type == VectorType.BINARY:
             t_approx_matrix = np.logical_xor(
                 edge_matrix.astype(bool), query_vec[np.newaxis, :].astype(bool)
             ).astype(np.float64)
         else:
-            t_approx_matrix = edge_matrix * query_vec[np.newaxis, :]  # (E, D)
+            t_approx_matrix = edge_matrix * query_vec[np.newaxis, :]  # (E_f, D)
 
-        # 批量 retrieve：计算 t_approx 与所有 item_memory 的相似度
-        names, item_matrix = self._build_item_matrix()  # (N, D)
-        if len(names) == 0:
+        # ---- 缩小 cleanup 范围：只与该 relation 下的 target 概念比较 ----
+        # target 名从存储时索引获取（非运行时字符串解析）
+        # N 从全部 item_memory(~20000) 缩减到目标概念子集
+        target_names: List[str] = []
+        seen: set = set()
+        for (_, t) in indexed:
+            if t not in seen and t in self.item_memory:
+                seen.add(t)
+                target_names.append(t)
+        if not target_names:
             return []
 
-        item_norms = np.linalg.norm(item_matrix, axis=1)  # (N,)
-        t_norms = np.linalg.norm(t_approx_matrix, axis=1)  # (E,)
+        target_matrix = np.array(
+            [self.item_memory[t] for t in target_names], dtype=np.float64
+        )  # (N_f, D)
 
-        # 相似度矩阵: (E, N) = (E, D) @ (D, N)
-        # 防止除零
-        denom = np.outer(t_norms, item_norms) + 1e-16  # (E, N)
-        sims_matrix = (t_approx_matrix @ item_matrix.T) / denom  # (E, N)
+        # 相似度矩阵: (E_f, N_f) — 纯 HDC cosine similarity
+        t_norms = np.linalg.norm(t_approx_matrix, axis=1)  # (E_f,)
+        target_norms = np.linalg.norm(target_matrix, axis=1)  # (N_f,)
+        denom = np.outer(t_norms, target_norms) + 1e-16  # (E_f, N_f)
+        sims_matrix = (t_approx_matrix @ target_matrix.T) / denom  # (E_f, N_f)
 
         # 对每条边取 top-1（最相似的 target）
-        best_indices = np.argmax(sims_matrix, axis=1)  # (E,)
-        best_sims = sims_matrix[np.arange(len(edge_keys)), best_indices]  # (E,)
+        best_indices = np.argmax(sims_matrix, axis=1)  # (E_f,)
+        best_sims = sims_matrix[np.arange(len(edge_keys)), best_indices]  # (E_f,)
 
         # 按相似度排序，取 top_k
         sorted_idx = np.argsort(-best_sims)[:top_k]
         results = [
-            (names[best_indices[i]], float(best_sims[i])) for i in sorted_idx
+            (target_names[best_indices[i]], float(best_sims[i])) for i in sorted_idx
         ]
 
         return results
@@ -770,9 +869,11 @@ class HDCMemory:
         self.associative_memory = {}
         self.episodic_memory = []
         self.graph_edges = {}
+        self._edges_by_relation = {}
         self._permutation = None
         self._item_matrix_cache = None
         self._item_matrix_dirty = True
+        self._item_overwritten = False
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the memory state for serialization."""
@@ -807,9 +908,19 @@ class HDCMemory:
             k: v.copy() for k, v in state.get("graph_edges", {}).items()
         }
         self._permutation = state["_permutation"].copy() if state.get("_permutation") is not None else None
+        # 从 graph_edges 重建 relation 索引
+        self._edges_by_relation: Dict[str, List[Tuple[str, str]]] = {}
+        for edge_key in self.graph_edges:
+            parts = edge_key.split("|")
+            if len(parts) == 3:
+                _, rel, tgt = parts
+                if rel not in self._edges_by_relation:
+                    self._edges_by_relation[rel] = []
+                self._edges_by_relation[rel].append((edge_key, tgt))
         # 缓存失效，下次 retrieve 时重建
         self._item_matrix_cache = None
         self._item_matrix_dirty = True
+        self._item_overwritten = False
 
     def __repr__(self) -> str:
         return (

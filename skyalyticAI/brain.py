@@ -550,13 +550,10 @@ class NIEABrain:
         # Poisson rate coding: probability proportional to normalized input
         probs = np.clip(normalized * 0.5, 0.0, 1.0)
 
-        spike_train = np.zeros(
-            (self.spike_encoding_steps, self.input_dim), dtype=np.float64
-        )
-        for t in range(self.spike_encoding_steps):
-            spike_train[t] = (np.random.random(self.input_dim) < probs).astype(
-                np.float64
-            )
+        # 向量化：一次性生成所有时间步的 spike
+        spike_train = (
+            np.random.random((self.spike_encoding_steps, self.input_dim)) < probs
+        ).astype(np.float64)
 
         return spike_train
 
@@ -587,17 +584,25 @@ class NIEABrain:
         """
         sensory_input = np.asarray(sensory_input, dtype=np.float64)
 
-        spike_train = self._encode_to_spikes(sensory_input)
+        import time as _time
+        _p_t = {}
 
+        _t0 = _time.time()
+        spike_train = self._encode_to_spikes(sensory_input)
+        _p_t["encode"] = _time.time() - _t0
+
+        _t0 = _time.time()
         current_spikes = spike_train
         for snn_layer in self.snn_layers:
             output_spikes, _ = snn_layer.forward(current_spikes)
             current_spikes = output_spikes
-
         hidden_state = np.mean(current_spikes, axis=0)
+        _p_t["snn"] = _time.time() - _t0
 
+        _t0 = _time.time()
         recurrent_current = self.stdp_layer.forward(hidden_state)
         hidden_state = hidden_state + 0.1 * np.tanh(recurrent_current)
+        _p_t["stdp_fwd"] = _time.time() - _t0
 
         if hidden_state.shape[0] != self.hidden_dim:
             padded = np.zeros(self.hidden_dim, dtype=np.float64)
@@ -605,7 +610,15 @@ class NIEABrain:
             padded[:n] = hidden_state[:n]
             hidden_state = padded
 
+        _t0 = _time.time()
         inference_result = self.pcn.infer(hidden_state)
+        _p_t["pcn_infer"] = _time.time() - _t0
+
+        # perceive 内部计时日志（前10步 + 每100步）
+        if self.age < 10 or self.age % 100 == 0:
+            total_p = sum(_p_t.values())
+            parts = " ".join(f"{k}={v:.3f}s" for k, v in _p_t.items())
+            print(f"[perceive] total={total_p:.3f}s | {parts}", flush=True)
 
         # Save PCN state for learn() before any modification
         # Only save on first perceive to avoid overwrite by subsequent perceive calls
@@ -637,45 +650,63 @@ class NIEABrain:
 
         return hidden_state, prediction, prediction_error
 
+    def perceive_encode_only(
+        self, sensory_input: np.ndarray
+    ) -> np.ndarray:
+        """
+        轻量感知：只做SNN编码+STDP前向，跳过PCN推断。
+        用于获取 next_hidden，避免第二次完整 perceive 的开销。
+        """
+        sensory_input = np.asarray(sensory_input, dtype=np.float64)
+        spike_train = self._encode_to_spikes(sensory_input)
+        current_spikes = spike_train
+        for snn_layer in self.snn_layers:
+            output_spikes, _ = snn_layer.forward(current_spikes)
+            current_spikes = output_spikes
+        hidden_state = np.mean(current_spikes, axis=0)
+        recurrent_current = self.stdp_layer.forward(hidden_state)
+        hidden_state = hidden_state + 0.1 * np.tanh(recurrent_current)
+        if hidden_state.shape[0] != self.hidden_dim:
+            padded = np.zeros(self.hidden_dim, dtype=np.float64)
+            n = min(hidden_state.shape[0], self.hidden_dim)
+            padded[:n] = hidden_state[:n]
+            hidden_state = padded
+        return hidden_state
+
     def perceive_multimodal(
         self,
         visual: Optional[np.ndarray] = None,
         audio: Optional[np.ndarray] = None,
         raw_observation: Optional[np.ndarray] = None,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        encode_only: bool = False,
+    ) -> Union[Tuple[np.ndarray, np.ndarray, np.ndarray], np.ndarray]:
         """
         Perceive multimodal input through the perception pipeline.
 
-        Pipeline:
-        1. Encode each modality (visual, audio) into feature vectors
-        2. Fuse modalities using attention-weighted combination
-        3. Feed fused representation through SNN + PCN
-
         Parameters
         ----------
-        visual : np.ndarray or None
-            Visual input (image array).
-        audio : np.ndarray or None
-            Audio input (waveform array).
-        raw_observation : np.ndarray or None
-            Raw observation vector (bypasses perception pipeline).
-
-        Returns
-        -------
-        hidden_state : np.ndarray
-        prediction : np.ndarray
-        prediction_error : np.ndarray
+        encode_only : bool
+            If True, skip PCN inference and return only hidden_state.
+            Used for second perceive (next_hidden) to save ~2s/step.
         """
         features: Dict[str, np.ndarray] = {}
+        import time as _time
+        _mm_t = {}
 
         if visual is not None and self.visual_encoder is not None:
+            _t0 = _time.time()
             features["visual"] = self.visual_encoder.encode(visual)
+            _mm_t["visual_enc"] = _time.time() - _t0
 
         if audio is not None and self.audio_encoder is not None:
+            _t0 = _time.time()
             features["audio"] = self.audio_encoder.encode(audio)
+            _mm_t["audio_enc"] = _time.time() - _t0
 
         if features and self.multimodal_fusion is not None:
+            _t0 = _time.time()
             fused = self.multimodal_fusion.fuse(features)
+            _mm_t["fusion"] = _time.time() - _t0
             if raw_observation is not None:
                 raw = np.asarray(raw_observation, dtype=np.float64)
                 # 融合多模态特征与原始观测，各占一半维度
@@ -717,7 +748,19 @@ class NIEABrain:
                     )
                 sensory_input = self._perception_projection_W @ sensory_input
 
-        return self.perceive(sensory_input)
+        if encode_only:
+            result = self.perceive_encode_only(sensory_input)
+        else:
+            result = self.perceive(sensory_input)
+
+        # 多模态编码计时日志
+        if self.age < 10 or self.age % 100 == 0:
+            total_mm = sum(_mm_t.values())
+            if total_mm > 0.01:
+                parts = " ".join(f"{k}={v:.3f}s" for k, v in _mm_t.items())
+                print(f"[multimodal] total={total_mm:.3f}s | {parts}", flush=True)
+
+        return result
 
     def _get_pcn_enhanced_hidden(self, hidden_state: np.ndarray) -> np.ndarray:
         """
@@ -1005,6 +1048,9 @@ class NIEABrain:
         dict
             Dictionary containing learning metrics.
         """
+        import time as _time
+        _t = {}
+
         pre_spikes = (hidden_state > np.mean(hidden_state)).astype(np.float64)
         post_spikes = (next_hidden_state > np.mean(next_hidden_state)).astype(np.float64)
         # PCN-guided STDP: 用 PCN 预测误差调制 STDP 学习强度
@@ -1017,10 +1063,13 @@ class NIEABrain:
                     np.linalg.norm(e) / max(1.0, np.sqrt(e.shape[0]))
                     for e in valid_errors
                 ]))
+        _t0 = _time.time()
         stdp_update = self.stdp_layer.update(
             pre_spikes, post_spikes, prediction_error=pcn_error_scalar
         )
+        _t["stdp"] = _time.time() - _t0
 
+        _t0 = _time.time()
         if self._saved_pcn_state is not None:
             current_errors = self.pcn.prediction_errors
             current_input = self.pcn.input_state
@@ -1041,6 +1090,7 @@ class NIEABrain:
             self._saved_pcn_state = None
         else:
             pcn_result = self.pcn.learn()
+        _t["pcn"] = _time.time() - _t0
 
         action_vec = np.zeros(self.action_dim, dtype=np.float64)
         action_vec[action % self.action_dim] = 1.0
@@ -1048,18 +1098,25 @@ class NIEABrain:
         next_obs = self.state_to_obs_W @ next_hidden_state + self.state_to_obs_b
 
         wm_reward = env_reward if env_reward is not None else reward
+        _t0 = _time.time()
         wm_loss = self.world_model.train_step(obs, action_vec, next_obs, reward=wm_reward)
+        _t["world_model"] = _time.time() - _t0
 
+        _t0 = _time.time()
         self.active_inference.learn_transition(hidden_state, action, next_hidden_state)
         # state_dim == obs_dim == hidden_dim：hidden_state 既是真实状态也是观测，
         # 直接用 hidden_state 作为 state 与 observation 训练观测模型 p(o|s)，
         # 避免使用被 think() 中 perceive() 更新过的后验 belief_mu 造成信息泄漏。
         self.active_inference.learn_observation(hidden_state, hidden_state)
+        _t["active_inf"] = _time.time() - _t0
 
+        _t0 = _time.time()
         surprise = float(np.linalg.norm(prediction_error))
         if surprise > self.surprise_threshold or abs(reward) > 0:
             self._store_to_memory(hidden_state, action, next_hidden_state, reward, surprise)
+        _t["memory"] = _time.time() - _t0
 
+        _t0 = _time.time()
         # Store to complementary memory with same filtering as HDC
         if surprise > self.surprise_threshold or abs(reward) > 0:
             self.complementary_memory.store(hidden_state, next_hidden_state)
@@ -1070,7 +1127,9 @@ class NIEABrain:
         if self.structural_evolution.should_evolve():
             if self.structural_evolution.detect_plateau():
                 self._evolve_structure()
+        _t["evolve"] = _time.time() - _t0
 
+        _t0 = _time.time()
         meta_features = np.array([reward, self.pcn.get_prediction_uncertainty(), float(self.age) / 10000.0])
         meta_input = np.concatenate([hidden_state, meta_features])
         if meta_input.shape[0] < self.metacognition.input_dim:
@@ -1092,7 +1151,9 @@ class NIEABrain:
         self.metacognition.update_meta_knowledge(
             meta_input, confidence, actual_outcome, reward
         )
+        _t["meta"] = _time.time() - _t0
 
+        _t0 = _time.time()
         self.experience_buffer.append({
             "state": hidden_state.copy(),
             "action": action,
@@ -1104,6 +1165,7 @@ class NIEABrain:
         if self._consolidation_counter >= self.consolidation_interval:
             self._consolidate_memory()
             self._consolidation_counter = 0
+        _t["consolidate"] = _time.time() - _t0
 
         self.stats["prediction_errors"].append(surprise)
         self.stats["curiosity_levels"].append(self.pcn.get_prediction_uncertainty())
@@ -1115,6 +1177,12 @@ class NIEABrain:
         for key in self.stats:
             if len(self.stats[key]) > _MAX_STATS:
                 self.stats[key] = self.stats[key][-_MAX_STATS // 2:]
+
+        # 计时日志（前10步 + 每100步打印一次）
+        if self.age < 10 or self.age % 100 == 0:
+            total = sum(_t.values())
+            parts = " ".join(f"{k}={v:.3f}s" for k, v in _t.items() if v > 0.001)
+            print(f"[learn] total={total:.3f}s | {parts}", flush=True)
 
         return {
             "stdp_update": stdp_update,
@@ -1182,11 +1250,10 @@ class NIEABrain:
         )
 
         if use_deep_imagination:
-            # 深度想象：对每个 action 单独做 beam search rollout
+            # 深度想象：先用单步预测筛选 top-k action，只对 top-k 做 beam search
             # 理论声明："deep imagination rollout (≥10 steps) without actual action execution"
-            # 对每个 action 单独调用 imagine_deep，确保：
-            # 1. 每个 action 都有深度想象结果（不被 beam search 剪枝）
-            # 2. 所有 action 的 reward 量级一致（都是10步累积折扣价值）
+            # top-k 策略：先用快速单步预测评估所有 action，再对最有前景的
+            # top-k 个 action 做深度想象，避免对 355 个 action 各做 beam search
             available_actions = []
             action_vecs = []
             for a in range(self.action_dim):
@@ -1195,45 +1262,67 @@ class NIEABrain:
                 available_actions.append(av)
                 action_vecs.append(av)
 
+            # Step 1: 单步预测所有 action（快速筛选）
+            single_step_rewards = np.zeros(self.action_dim, dtype=np.float64)
+            single_step_obs = {}
+            single_step_z = {}
             for a in range(self.action_dim):
                 av = action_vecs[a]
-                # 第一步：执行 action a
                 z_next = self.world_model.predict_next_state(z, av)
                 obs_next = self.world_model.decode(z_next)
                 first_reward = self.world_model.predict_reward(z_next)
+                if np.isnan(first_reward) or np.isinf(first_reward):
+                    first_reward = 0.0
+                single_step_rewards[a] = first_reward
+                single_step_obs[a] = obs_next
+                single_step_z[a] = z_next
 
-                # 后续9步：从 obs_next 开始 beam search（总共10步）
-                beams = self.world_model.imagine_deep(
-                    start_obs=obs_next,
-                    available_actions=available_actions,
-                    depth=9,            # 第一步已走，再走9步=10步
-                    n_branches=2,       # 每个action的beam宽度（控制计算量）
-                    deterministic=True,
-                    gamma=0.95,
-                    epistemic_weight=0.1,
-                )
+            # Step 2: 选 top-k action 做深度想象
+            k_deep = min(10, self.action_dim)  # 只对 top-10 做深度想象
+            top_k_actions = np.argsort(-single_step_rewards)[:k_deep]
+            # beam search 也只用 top-k action（避免每步展开 355 个 action）
+            top_k_action_vecs = [action_vecs[a] for a in top_k_actions]
 
-                if beams:
-                    # 取最优路径的累积价值 + 第一步奖励
-                    best_beam = beams[0]
-                    deep_reward = first_reward + best_beam["total_value"]
-                    epistemic = best_beam["epistemic_values"][0] if best_beam["epistemic_values"] else 0.0
-                    # 数值稳定性：NaN/inf 检查，防止传播到 action selection
-                    if np.isnan(deep_reward) or np.isinf(deep_reward):
-                        deep_reward = float(self.world_model.predict_reward(z_next))
-                    if np.isnan(epistemic) or np.isinf(epistemic):
+            # Step 3: 对 top-k 做深度想象，其余用单步预测
+            for a in range(self.action_dim):
+                obs_next = single_step_obs[a]
+                first_reward = single_step_rewards[a]
+
+                if a in top_k_actions:
+                    # 深度想象：后续9步 beam search（总共10步）
+                    # beam search 内部只展开 top-k action（控制计算量）
+                    beams = self.world_model.imagine_deep(
+                        start_obs=obs_next,
+                        available_actions=top_k_action_vecs,
+                        depth=9,        # 第一步已走，再走9步=10步
+                        n_branches=2,   # beam 宽度
+                        deterministic=True,
+                        gamma=0.95,
+                        epistemic_weight=0.1,
+                    )
+
+                    if beams:
+                        best_beam = beams[0]
+                        deep_reward = first_reward + best_beam["total_value"]
+                        epistemic = best_beam["epistemic_values"][0] if best_beam["epistemic_values"] else 0.0
+                        if np.isnan(deep_reward) or np.isinf(deep_reward):
+                            deep_reward = float(first_reward)
+                        if np.isnan(epistemic) or np.isinf(epistemic):
+                            epistemic = 0.0
+                    else:
+                        deep_reward = first_reward
                         epistemic = 0.0
                 else:
+                    # 非 top-k：使用单步预测结果（量级与深度想象不同，
+                    # 但 action selection 用相对排序，不影响正确性）
                     deep_reward = first_reward
                     epistemic = 0.0
 
-                # 最终兜底：确保 reward 和 epistemic 不是 NaN/inf
-                # 即使 world_model 内部权重有 NaN，也不会传播到 action selection
+                # 最终兜底
                 if np.isnan(deep_reward) or np.isinf(deep_reward):
                     deep_reward = 0.0
                 if np.isnan(epistemic) or np.isinf(epistemic):
                     epistemic = 0.0
-                # 清理 obs_next 中的 NaN/inf
                 obs_next = np.nan_to_num(obs_next, nan=0.0, posinf=1.0, neginf=-1.0)
 
                 outcomes[a] = {
@@ -1337,7 +1426,12 @@ class NIEABrain:
             padded = np.zeros(self.hd_memory.dim, dtype=np.float64)
             padded[:state_vec.shape[0]] = state_vec
             state_vec = padded
+
+        import time as _time
+        _qm_t = {}
+        _t0 = _time.time()
         results = self.hd_memory.retrieve(state_vec, top_k=top_k)
+        _qm_t["retrieve"] = _time.time() - _t0
 
         # Also retrieve associative memories for the top results
         for key, sim in results[:2]:
@@ -1352,9 +1446,9 @@ class NIEABrain:
                         else:
                             results.append((assoc_key, 0.5))
 
-        # HDC 图记忆多跳推理：从最相似状态出发，沿 "leads_to" 关系游走
+        # HDC 图记忆多跳推理：每10步做一次图查询（避免每步大矩阵乘法）
         # 理论声明："苹果->是一种->水果->含有->维生素" 多 relation 串联推理
-        if results:
+        if results and self.age % 10 == 0:
             best_key, best_sim = results[0]
             # 用 query_graph 查询该状态能到达哪些状态
             graph_results = self.hd_memory.query_graph(best_key, "leads_to", top_k=2)

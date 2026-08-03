@@ -20,7 +20,7 @@ Cochlea Encoder - 耳蜗前端编码器（生物可解释，无预训练，不�
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from scipy import signal as _sig
@@ -92,6 +92,17 @@ class CochleaEncoder:
         self._last_rates = np.zeros(n_fibers, dtype=np.float64)
         self._last_spikes = np.zeros((n_fibers, spike_steps), dtype=np.float64)
 
+        # FFT 批处理滤波缓存（懒计算：首次 encode 时按固定 n_fft 构建）
+        # 固定 n_fft 避免音频长度变化导致 filter_freqs 重复计算
+        # max_n_samples = 4秒@16kHz（覆盖典型语音长度，超长音频截断）
+        self._max_n_samples: int = min(4 * sample_rate, 65536)
+        n_fft = 1
+        while n_fft < self._max_n_samples * 2:
+            n_fft *= 2
+        self._n_fft_fixed: int = n_fft
+        self._cached_n_fft: int = 0
+        self._filter_freqs: Optional[np.ndarray] = None  # (n_fibers, n_freqs) complex
+
     # ----- 基底膜 -----
     @staticmethod
     def _erb_space(f_min: float, f_max: float, n: int) -> np.ndarray:
@@ -121,15 +132,54 @@ class CochleaEncoder:
                 bank.append(("sos", sos))
         return bank
 
-    def _basilar_membrane(self, wave: np.ndarray) -> np.ndarray:
-        """波形 -> (n_fibers, n_samples) 各频率通道的基底膜振动。"""
-        out = np.zeros((self.n_fibers, wave.shape[0]), dtype=np.float64)
+    def _compute_filter_freqs(self, n_fft: int) -> None:
+        """预计算所有滤波器在 n_fft 频率点的频率响应（复数矩阵）。
+
+        用 FFT 直接计算 H(z) = B(z)/A(z) 在 rfftfreq 频点上的值：
+        rfft(b_pad) / rfft(a_pad)，比 freqz 逐频点求值快 100 倍+。
+        """
+        n_freqs = n_fft // 2 + 1
+        self._filter_freqs = np.zeros((self.n_fibers, n_freqs), dtype=np.complex128)
         for i, (kind, coef) in enumerate(self._filters):
             if kind == "ba":
                 b, a = coef
-                out[i] = _sig.lfilter(b, a, wave)
-            else:
-                out[i] = _sig.sosfilt(coef, wave)
+            else:  # "sos"
+                b, a = _sig.sos2tf(coef)
+            # 零填充到 n_fft 后 rfft，得到 rfftfreq 频点上的精确响应
+            b_pad = np.zeros(n_fft, dtype=np.float64)
+            a_pad = np.zeros(n_fft, dtype=np.float64)
+            b_pad[:len(b)] = b
+            a_pad[:len(a)] = a
+            b_fft = np.fft.rfft(b_pad, n_fft)
+            a_fft = np.fft.rfft(a_pad, n_fft)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                h = b_fft / a_fft
+            h[~np.isfinite(h)] = 0.0
+            self._filter_freqs[i] = h
+        self._cached_n_fft = n_fft
+
+    def _basilar_membrane(self, wave: np.ndarray) -> np.ndarray:
+        """波形 -> (n_fibers, n_samples) 各频率通道的基底膜振动。
+
+        FFT 批处理实现：一次 rfft(wave) × 频率响应矩阵 → irfft，
+        替代逐通道 lfilter 循环（64 次串行 → 1 次向量化）。
+
+        固定 n_fft：音频截断/补零到统一长度，filter_freqs 只计算一次。
+        """
+        n = wave.shape[0]
+        # 固定使用 max_n_samples，避免音频长度变化导致 filter_freqs 重复计算
+        if n > self._max_n_samples:
+            n = self._max_n_samples
+            wave = wave[:n]
+
+        n_fft = self._n_fft_fixed
+
+        if self._filter_freqs is None:
+            self._compute_filter_freqs(n_fft)
+
+        wave_fft = np.fft.rfft(wave, n_fft)                     # (n_freqs,)
+        out_fft = self._filter_freqs * wave_fft[np.newaxis, :]  # (n_fibers, n_freqs)
+        out = np.fft.irfft(out_fft, n_fft, axis=1)[:, :n]       # (n_fibers, n)
         return out
 
     def _hair_cells(self, channels: np.ndarray) -> np.ndarray:

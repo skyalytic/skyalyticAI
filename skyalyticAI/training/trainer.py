@@ -248,19 +248,25 @@ class NIEATrainer:
         }
 
     def _perceive_observation(
-        self, obs: Union[np.ndarray, Dict[str, Any]]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, obs: Union[np.ndarray, Dict[str, Any]], encode_only: bool = False
+    ) -> Union[Tuple[np.ndarray, np.ndarray, np.ndarray], np.ndarray]:
         """
         支持多模态观测：
         - 传统：np.ndarray
         - 多模态：dict，可包含 visual/audio/raw_observation
+        - encode_only=True: 只做SNN编码，跳过PCN，返回hidden_state
         """
         if isinstance(obs, dict):
             visual = obs.get("visual")
             audio = obs.get("audio")
             raw = obs.get("raw_observation")
             # 允许缺项：由 brain.perceive_multimodal 内部处理
-            return self.brain.perceive_multimodal(visual=visual, audio=audio, raw_observation=raw)
+            return self.brain.perceive_multimodal(
+                visual=visual, audio=audio, raw_observation=raw,
+                encode_only=encode_only,
+            )
+        if encode_only:
+            return self.brain.perceive_encode_only(obs)
         return self.brain.perceive(obs)
 
     def _should_stop_early(self) -> bool:
