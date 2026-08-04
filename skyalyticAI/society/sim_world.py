@@ -95,6 +95,9 @@ class SocietySimWorld(Environment):
         self._spec = get_quality_spec(self.school_stage)
         self._steps_in_stage = 0
         self._episodes_since_exam = 0
+        # 滚动说话准确率（由 trainer 在每 episode 开头通过 set_rolling_speech_accuracy 传入）
+        # 用于升学判定，确保"持续达标"而非"偶然波动"
+        self._rolling_speech_acc: float = 0.0
         self._day = 0
         self._slot_idx = 0
         self._state: Optional[SocietyState] = None
@@ -127,7 +130,7 @@ class SocietySimWorld(Environment):
 
     # ----- 训练器兼容接口 -----
     def set_rolling_speech_accuracy(self, acc: float) -> None:
-        pass
+        self._rolling_speech_acc = acc
 
     def set_rolling_subject_accuracy(self, subject_acc: Dict[str, float]) -> None:
         pass
@@ -411,9 +414,21 @@ class SocietySimWorld(Environment):
             self._ctx_indices = self._ctx_indices[-500:]
 
     def _check_promotion(self, acc: float) -> bool:
+        # 使用 trainer 维护的滚动准确率（episode 级更新），确保升学是"持续达标"而非"偶然波动"
+        # acc 参数保留兼容签名，内部统一用 rolling_acc 判定
+        rolling_acc = self._rolling_speech_acc
+        # 非考试学段（sensorimotor）：步数+滚动说话率达标即可自动升学
+        # 理论依据：0~3岁感知运动期无笔试，按发展里程碑（步数+咿呀学语准确率）升学
+        if not self._spec.allows_subject_exam:
+            if (self._steps_in_stage >= self._spec.min_steps_in_stage
+                and rolling_acc >= self._spec.min_rolling_speech_accuracy):
+                return self._promote_stage()
+            return False
+        # 考试学段（幼儿园及以上）：步数+滚动准确率+考试间隔+允许考试
+        # 阈值直接取配置的 min_rolling_speech_accuracy，不拔高（各学段配置已合理）
         if not (
             self._steps_in_stage >= self._spec.min_steps_in_stage
-            and acc >= max(0.45, self._spec.min_rolling_speech_accuracy)
+            and rolling_acc >= self._spec.min_rolling_speech_accuracy
             and self._episodes_since_exam >= self._spec.min_episodes_between_exams
             and self._spec.allows_subject_exam
         ):
