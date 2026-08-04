@@ -315,6 +315,12 @@ skyalyticAI/
     - 总计提升 **517 倍**，bind/unbind 语义完全不变，100% 符合 HDC 理论
     - 图边数量上限 5000（与 episodic_memory 同策略），防止记忆无限增长
 
+20. **主动推理批量化 + 海马体容量管理**（v1.4.4，fix 126）：
+    - `select_action` 从逐 action 循环改为全 action 批量 GPU 计算（8 步：transition/obs prediction、Jacobian、covariance、epistemic/pragmatic value），48.5s→23.4ms（提升 2073 倍）
+    - HDC `item_memory`/`associative_memory` 容量上限（按预设级别分配：small=80K/50K ~ human=1M/500K）
+    - 重要性加权淘汰：高 surprise 经验被保护（符合海马体情绪/惊奇增强记忆机制），低 importance 的 `exp_`/`nexp_` 概念先淘汰，`act_`/`rew_`/`sur_` 常用概念永久保留
+    - 旧 checkpoint 兼容：无 `_concept_importance` 字段时自动过渡到加权淘汰
+
 ## 完整 API 参考
 
 详细的 API 文档（覆盖 20 个模块、所有公开类与方法签名）见 [API_REFERENCE.md](API_REFERENCE.md)。

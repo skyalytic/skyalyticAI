@@ -73,6 +73,8 @@ class HDCMemory:
         vector_type: VectorType | str = VectorType.BIPOLAR,
         seed: Optional[int] = None,
         similarity_threshold: float = 0.1,
+        max_item_memory: int = 80000,
+        max_associative_memory: int = 50000,
     ) -> None:
         if dim <= 0:
             raise ValueError(f"dim must be positive, got {dim}")
@@ -97,6 +99,14 @@ class HDCMemory:
         self.graph_edges: Dict[str, np.ndarray] = {}
         # 图边数量上限（与 episodic_memory 同策略，防止无限增长导致检索变慢）
         self.max_graph_edges: int = 5000
+        # item_memory 和 associative_memory 容量上限（防止 RAM 爆炸）
+        # 理论依据：海马体容量有限，重要记忆已巩固到皮层（world_model/PCN）
+        self.max_item_memory: int = max_item_memory
+        self.max_associative_memory: int = max_associative_memory
+        # 概念重要性缓存：state_key -> surprise 等级 (0.0~9.0)
+        # 理论依据：海马体对高 surprise（情绪/惊奇）经验加权保留，符合生物机制
+        # 用于淘汰时保护高 surprise 的 exp_ 概念，避免重要低频专业知识被误删
+        self._concept_importance: Dict[str, float] = {}
         # 按 relation 分桶的图边索引（存储时维护，检索时零字符串解析）
         # relation_name -> [(edge_key, target_name), ...]
         self._edges_by_relation: Dict[str, List[Tuple[str, str]]] = {}
@@ -305,6 +315,33 @@ class HDCMemory:
                 self._item_overwritten = True
         self.item_memory[name] = vector
         self._item_matrix_dirty = True
+
+        # 重要性加权淘汰：超出上限 1000 条后，按 surprise 等级升序淘汰 exp_/nexp_ 概念
+        # 保留 act_/rew_/sur_ 等常用概念（数量少且反复使用）
+        # 理论依据：海马体对高 surprise（情绪/惊奇）经验加权保留，避免重要低频专业知识被误删
+        # nexp_ 默认 importance=0 先淘汰；若其重要，作为 state_key 时自有高 importance 被保护
+        if len(self.item_memory) > self.max_item_memory + 1000:
+            evict_count = len(self.item_memory) - self.max_item_memory
+            # 收集候选淘汰概念及其重要性（低 surprise 先淘汰）
+            candidates = []
+            for name in self.item_memory.keys():
+                if name.startswith(("exp_", "nexp_")):
+                    importance = self._concept_importance.get(name, 0.0)
+                    candidates.append((name, importance))
+            # 按重要性升序排序（importance 相同时保持插入序，近似 FIFO）
+            candidates.sort(key=lambda x: x[1])
+            evicted = 0
+            for name, _ in candidates:
+                if evicted >= evict_count:
+                    break
+                del self.item_memory[name]
+                # 清理重要性缓存，避免孤儿条目累积
+                self._concept_importance.pop(name, None)
+                evicted += 1
+            if evicted > 0:
+                self._item_matrix_dirty = True
+                self._item_overwritten = True  # 强制全量重建缓存
+
         return vector
 
     def get_concept(self, name: str) -> Optional[np.ndarray]:
@@ -355,6 +392,25 @@ class HDCMemory:
 
         bound = self.bind(key_vec, value_vec)
         self.associative_memory[key_name] = bound
+
+        # 重要性加权：解析 surprise 关联，缓存 state 的 surprise 等级
+        # 理论依据：高 surprise = 高信息量，海马体对惊奇经验加权保留（情绪/惊奇机制）
+        # 关联格式：key="exp_{hex}__surprise" -> value="sur_{0-9}"
+        if key_name.endswith("__surprise") and value_name.startswith("sur_"):
+            state_key = key_name[:-len("__surprise")]
+            try:
+                surprise_level = float(value_name[4:])
+                # 同一 state 多次经历，保留最高 surprise（重要经验难忘）
+                if surprise_level > self._concept_importance.get(state_key, -1.0):
+                    self._concept_importance[state_key] = surprise_level
+            except (ValueError, IndexError):
+                pass
+
+        # FIFO 淘汰：所有 key 均为 "exp_*__action" 等一次性状态关联，可安全淘汰
+        # 理论依据：海马体容量有限，重要关联已通过巩固存入皮层
+        while len(self.associative_memory) > self.max_associative_memory:
+            oldest_key = next(iter(self.associative_memory))
+            del self.associative_memory[oldest_key]
 
         return bound
 
@@ -874,6 +930,7 @@ class HDCMemory:
         self._item_matrix_cache = None
         self._item_matrix_dirty = True
         self._item_overwritten = False
+        self._concept_importance = {}
 
     def state_dict(self) -> Dict[str, Any]:
         """Return the memory state for serialization."""
@@ -886,6 +943,7 @@ class HDCMemory:
             "vector_type": self.vector_type.value,
             "similarity_threshold": self.similarity_threshold,
             "_permutation": self._permutation.copy() if self._permutation is not None else None,
+            "_concept_importance": dict(self._concept_importance),
         }
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
@@ -921,6 +979,14 @@ class HDCMemory:
         self._item_matrix_cache = None
         self._item_matrix_dirty = True
         self._item_overwritten = False
+        # 恢复概念重要性缓存（旧 checkpoint 兼容：无此字段时置空，后续新经验自然填充）
+        saved_importance = state.get("_concept_importance")
+        if saved_importance is not None:
+            self._concept_importance = dict(saved_importance)
+        else:
+            # 旧 checkpoint 无重要性缓存：置空，首次淘汰将按近似 FIFO（importance 全 0）
+            # 之后新经验会通过 store_association 正常记录 importance，逐步过渡到加权淘汰
+            self._concept_importance = {}
 
     def __repr__(self) -> str:
         return (

@@ -109,6 +109,8 @@ class BrainScalePresets:
         "n_observations": 256,
         "spike_encoding_steps": 20,
         "synapses_per_neuron": 100,
+        "max_item_memory": 80000,
+        "max_associative_memory": 50000,
     }
 
     # -- 中规模：单卡GPU（RTX 3090 / 4090 / A10 等 24GB显存）--
@@ -121,6 +123,8 @@ class BrainScalePresets:
         "n_observations": 2048,
         "spike_encoding_steps": 50,
         "synapses_per_neuron": 1000,
+        "max_item_memory": 20000,
+        "max_associative_memory": 10000,
     }
 
     # -- 大规模：多卡GPU（A100 80GB x 4~8 卡）--
@@ -133,6 +137,8 @@ class BrainScalePresets:
         "n_observations": 8192,
         "spike_encoding_steps": 80,
         "synapses_per_neuron": 3000,
+        "max_item_memory": 10000,
+        "max_associative_memory": 5000,
     }
 
     # -- 超大规模：GPU集群（A100/H100 x 32+ 卡，分布式训练）--
@@ -145,6 +151,8 @@ class BrainScalePresets:
         "n_observations": 65536,
         "spike_encoding_steps": 100,
         "synapses_per_neuron": 5000,
+        "max_item_memory": 5000,
+        "max_associative_memory": 2000,
     }
 
     # -- 人脑规模：需要神经形态芯片或超大规模集群 --
@@ -157,6 +165,8 @@ class BrainScalePresets:
         "n_observations": 16_000_000_000,
         "spike_encoding_steps": 100,
         "synapses_per_neuron": 7000,        # 人脑每神经元平均突触数
+        "max_item_memory": 1_000_000,       # 100万情景记忆
+        "max_associative_memory": 500_000,  # 50万关联
     }
 
     @classmethod
@@ -289,11 +299,15 @@ class NIEABrain:
             n_observations = preset["n_observations"]
             spike_encoding_steps = preset["spike_encoding_steps"]
             synapses_per_neuron = preset["synapses_per_neuron"]
+            _preset_max_item_memory = preset.get("max_item_memory", 80000)
+            _preset_max_assoc_memory = preset.get("max_associative_memory", 50000)
             self.brain_scale = brain_scale
             if brain_scale in ("large", "xlarge", "human"):
                 sparse = True
         else:
             self.brain_scale = False
+            _preset_max_item_memory = 80000
+            _preset_max_assoc_memory = 50000
 
         # override 参数优先级最高，覆盖预设值
         if override_hidden_dim is not self._SENTINEL:
@@ -443,6 +457,8 @@ class NIEABrain:
             dim=hd_dim,
             vector_type="bipolar",
             seed=42,
+            max_item_memory=_preset_max_item_memory,
+            max_associative_memory=_preset_max_assoc_memory,
         )
 
         _is_large_scale = isinstance(brain_scale, str) and brain_scale in ("large", "xlarge", "human")

@@ -941,83 +941,178 @@ class ActiveInferenceAgent:
     def _select_action_single_step_gpu(
         self,
     ) -> Tuple[int, np.ndarray, np.ndarray]:
-        """GPU-accelerated single-step action selection."""
-        qualities = np.zeros(self.n_actions, dtype=np.float64)
-        epistemic_values = np.zeros(self.n_actions, dtype=np.float64)
-        pragmatic_values = np.zeros(self.n_actions, dtype=np.float64)
+        """
+        GPU-accelerated single-step action selection (fully batched).
 
-        for a in range(self.n_actions):
-            action_vec = np.zeros(self.n_actions, dtype=np.float64)
-            action_vec[a] = 1.0
-            sa = np.concatenate([self.belief_mu, action_vec])
-            sa_t = torch.as_tensor(sa, dtype=torch.float64, device=self.device)
+        语义与原 for-loop 版完全一致，只是把 A 个 action 的计算
+        合并为批量 GPU 操作，避免 Python 循环开销。
+        - Transition/Observation prediction: 一次前向传播处理所有 action
+        - Jacobian: 分 batch 计算（每批 64 个 action × n 个扰动）
+        - linalg.inv/slogdet: 批量处理 (A, n, n) 矩阵
+        """
+        self._sync_torch_weights()
 
-            # Transition prediction on GPU
-            trans_output = self._trans_net_torch(sa_t)
-            next_mu_t = trans_output[:self.state_dim]
-            next_logvar_t = trans_output[self.state_dim:]
-            next_logvar_t = torch.clamp(next_logvar_t, -10, 10)
-            next_var_t = torch.exp(next_logvar_t)
-            next_Sigma_t = torch.diag(
-                torch.clamp(next_var_t, min=1e-8, max=100.0)
+        n = self.state_dim
+        A = self.n_actions
+        d = self.obs_dim
+        eps = 1e-4
+        device = self.device
+        jac_batch = 64  # Jacobian 计算的 action 批大小（防 OOM）
+
+        mu_t = torch.as_tensor(self.belief_mu, dtype=torch.float64, device=device)
+        belief_Sigma_t = torch.as_tensor(
+            self.belief_Sigma, dtype=torch.float64, device=device
+        )
+        actions_eye = torch.eye(A, device=device, dtype=torch.float64)  # (A, A)
+        eye_n = torch.eye(n, device=device, dtype=torch.float64)
+
+        # === Step 1: 批量 Transition Prediction ===
+        mu_repeated = mu_t.unsqueeze(0).expand(A, -1)  # (A, n)
+        sa_all = torch.cat([mu_repeated, actions_eye], dim=1)  # (A, n+A)
+        trans_all = self._trans_net_torch(sa_all)  # (A, 2n)
+        next_mu_all = trans_all[:, :n]  # (A, n)
+        next_logvar_all = torch.clamp(trans_all[:, n:], -10, 10)
+        next_var_all = torch.exp(next_logvar_all)
+        next_Sigma_all = torch.diag_embed(
+            torch.clamp(next_var_all, min=1e-8, max=100.0)
+        )  # (A, n, n)
+
+        # === Step 2: 批量 Observation Prediction ===
+        obs_all = self._obs_net_torch(next_mu_all)  # (A, 2d)
+        obs_mu_all = obs_all[:, :d]  # (A, d)
+        obs_logvar_all = torch.clamp(obs_all[:, d:], -10, 10)
+        obs_var_all = torch.exp(obs_logvar_all)
+        obs_Sigma_all = torch.diag_embed(
+            torch.clamp(obs_var_all, min=1e-8, max=100.0)
+        )  # (A, d, d)
+
+        # === Step 3: 批量 Transition Jacobian (分 batch 避免 OOM) ===
+        eye_eps = eye_n * eps  # (n, n)
+        J_trans_all = torch.empty(A, n, n, dtype=torch.float64, device=device)
+        for start in range(0, A, jac_batch):
+            end = min(start + jac_batch, A)
+            bs = end - start
+            # mu_perturbed: (bs, n, n) — mu + eps*eye（对所有 action 相同）
+            mu_perturbed = (mu_t.unsqueeze(0) + eye_eps).unsqueeze(0).expand(bs, n, n)
+            action_batch = actions_eye[start:end].unsqueeze(1).expand(bs, n, A)
+            sa_jac = torch.cat([
+                mu_perturbed.reshape(bs * n, n),
+                action_batch.reshape(bs * n, A),
+            ], dim=1)  # (bs*n, n+A)
+            out_jac = self._trans_net_torch(sa_jac)[:, :n]  # (bs*n, n)
+            out_jac = out_jac.reshape(bs, n, n)  # (bs, n, n)
+            base_out = next_mu_all[start:end]  # (bs, n)
+            J_batch = (out_jac - base_out.unsqueeze(1)) / eps  # (bs, n, n)
+            J_trans_all[start:end] = J_batch.transpose(1, 2)  # J[:, j] = ∂/∂j
+
+        # === Step 4: 批量 Observation Jacobian (分 batch) ===
+        J_obs_all = torch.empty(A, d, n, dtype=torch.float64, device=device)
+        for start in range(0, A, jac_batch):
+            end = min(start + jac_batch, A)
+            bs = end - start
+            next_mu_batch = next_mu_all[start:end]  # (bs, n)
+            next_mu_perturbed = next_mu_batch.unsqueeze(1) + eye_eps.unsqueeze(0)  # (bs, n, n)
+            out_obs_jac = self._obs_net_torch(
+                next_mu_perturbed.reshape(bs * n, n)
+            )[:, :d]  # (bs*n, d)
+            out_obs_jac = out_obs_jac.reshape(bs, n, d)  # (bs, n, d)
+            base_obs = obs_mu_all[start:end]  # (bs, d)
+            J_obs_batch = (out_obs_jac - base_obs.unsqueeze(1)) / eps  # (bs, n, d)
+            J_obs_all[start:end] = J_obs_batch.transpose(1, 2)  # (bs, d, n)
+
+        # === Step 5: 批量 Covariance Propagation ===
+        prior_Sigma_all = (
+            J_trans_all @ belief_Sigma_t @ J_trans_all.transpose(1, 2)
+            + next_Sigma_all
+        )  # (A, n, n)
+
+        # === Step 6: 批量 Epistemic Value ===
+        sign_prior, logdet_prior = torch.linalg.slogdet(prior_Sigma_all)
+        # 对 sign <= 0 的加 jitter（只处理不正定的）
+        jitter = 1e-6
+        for _ in range(5):
+            neg_mask = sign_prior <= 0
+            if not neg_mask.any():
+                break
+            prior_Sigma_all[neg_mask] = prior_Sigma_all[neg_mask] + jitter * eye_n
+            sign_prior[neg_mask], logdet_prior[neg_mask] = torch.linalg.slogdet(
+                prior_Sigma_all[neg_mask]
             )
+            jitter *= 10
 
-            # Observation prediction on GPU
-            obs_output = self._obs_net_torch(next_mu_t)
-            obs_mu_t = obs_output[:self.obs_dim]
-            obs_logvar_t = obs_output[self.obs_dim:]
-            obs_logvar_t = torch.clamp(obs_logvar_t, -10, 10)
-            obs_var_t = torch.exp(obs_logvar_t)
-            obs_Sigma_t = torch.diag(
-                torch.clamp(obs_var_t, min=1e-8, max=100.0)
+        prior_entropy_all = (
+            0.5 * logdet_prior + 0.5 * n * np.log(2.0 * np.pi * np.e)
+        )
+
+        # Bayesian update: posterior_precision = prior_inv + J^T obs_inv J
+        prior_Sigma_inv_all = torch.linalg.inv(prior_Sigma_all)  # (A, n, n)
+        obs_Sigma_inv_all = torch.linalg.inv(obs_Sigma_all)  # (A, d, d)
+        posterior_precision_all = (
+            prior_Sigma_inv_all
+            + J_obs_all.transpose(1, 2) @ obs_Sigma_inv_all @ J_obs_all
+        )  # (A, n, n)
+        Sigma_posterior_all = torch.linalg.inv(posterior_precision_all)
+        Sigma_posterior_all = 0.5 * (
+            Sigma_posterior_all + Sigma_posterior_all.transpose(1, 2)
+        )
+
+        sign_post, logdet_post = torch.linalg.slogdet(Sigma_posterior_all)
+        jitter = 1e-6
+        for _ in range(5):
+            neg_mask = sign_post <= 0
+            if not neg_mask.any():
+                break
+            Sigma_posterior_all[neg_mask] = Sigma_posterior_all[neg_mask] + jitter * eye_n
+            sign_post[neg_mask], logdet_post[neg_mask] = torch.linalg.slogdet(
+                Sigma_posterior_all[neg_mask]
             )
+            jitter *= 10
 
-            # fix 123: GPU 批处理有限差分计算雅可比矩阵（替代 autograd.jacobian）
-            # 100% 精确（有限差分是标准数值方法），速度快 60 倍
-            eps = 1e-4
-            n = self.state_dim
-            mu_t = torch.as_tensor(
-                self.belief_mu, dtype=torch.float64, device=self.device
-            )
-            action_t = torch.as_tensor(
-                action_vec, dtype=torch.float64, device=self.device
-            )
+        posterior_entropy_all = (
+            0.5 * logdet_post + 0.5 * n * np.log(2.0 * np.pi * np.e)
+        )
+        info_gain_all = prior_entropy_all - posterior_entropy_all
+        epistemic_values = np.maximum(0.0, info_gain_all.detach().cpu().numpy())
 
-            # 基准输出
-            base_sa = torch.cat([mu_t, action_t])
-            base_out = self._trans_net_torch(base_sa)[:n]  # (n,)
+        # === Step 7: 批量 Pragmatic Value (KL divergence) ===
+        d_kl = min(d, self.preference_mu.shape[0])
+        obs_mu_d = obs_mu_all[:, :d_kl]  # (A, d_kl)
+        pref_mu_d = torch.as_tensor(
+            self.preference_mu[:d_kl], dtype=torch.float64, device=device
+        )
+        obs_Sigma_d = obs_Sigma_all[:, :d_kl, :d_kl]  # (A, d_kl, d_kl)
+        pref_Sigma_d = torch.as_tensor(
+            self.preference_Sigma[:d_kl, :d_kl], dtype=torch.float64, device=device
+        )
 
-            # 一次性创建 n 个扰动，批量前向传播
-            eye = torch.eye(n, device=self.device, dtype=torch.float64) * eps  # (n, n)
-            mu_batch = mu_t.unsqueeze(0) + eye  # (n, n) 每行是一个扰动
-            action_batch = action_t.unsqueeze(0).expand(n, -1)  # (n, n_actions)
-            sa_batch = torch.cat([mu_batch, action_batch], dim=1)  # (n, state_dim+n_actions)
-            out_batch = self._trans_net_torch(sa_batch)[:, :n]  # (n, n) 一次 GPU 调用
+        diff = obs_mu_d - pref_mu_d  # (A, d_kl)
+        try:
+            pref_Sigma_inv = torch.linalg.inv(pref_Sigma_d)
+        except RuntimeError:
+            pref_Sigma_inv = torch.eye(d_kl, dtype=torch.float64, device=device)
+        try:
+            log_det_pref = torch.linalg.slogdet(pref_Sigma_d)[1]
+        except RuntimeError:
+            log_det_pref = torch.tensor(0.0, dtype=torch.float64, device=device)
+        log_det_obs = torch.linalg.slogdet(obs_Sigma_d)[1]  # (A,)
 
-            # 雅可比矩阵：每列是一个偏导数
-            J_trans = (out_batch - base_out.unsqueeze(0)).T / eps  # (n, n)
+        # trace(pref_Sigma_inv @ obs_Sigma_d[a]) for each a
+        trace_term = torch.einsum('ij,aji->a', pref_Sigma_inv, obs_Sigma_d)
+        # diff^T pref_Sigma_inv diff for each a
+        quad_term = torch.einsum('ai,ij,aj->a', diff, pref_Sigma_inv, diff)
+        kl_all = 0.5 * (
+            trace_term + quad_term - d_kl + log_det_pref - log_det_obs
+        )
+        pragmatic_values = (-kl_all).detach().cpu().numpy()
 
-            # Propagate belief covariance through transition model
-            belief_Sigma_t = torch.as_tensor(
-                self.belief_Sigma, dtype=torch.float64, device=self.device
-            )
-            prior_Sigma_t = J_trans @ belief_Sigma_t @ J_trans.T + next_Sigma_t
-
-            epistemic_values[a] = self._compute_epistemic_value_gpu(
-                next_mu_t, prior_Sigma_t
-            )
-            pragmatic_values[a] = self._compute_pragmatic_value_gpu(
-                obs_mu_t, obs_Sigma_t
-            )
-            qualities[a] = epistemic_values[a] + pragmatic_values[a]
-
+        # === Step 8: Action Selection ===
+        qualities = epistemic_values + pragmatic_values
         scaled = qualities * self.action_precision / max(self.temperature, 1e-8)
         scaled -= np.max(scaled)
         action_probs = np.exp(scaled)
         action_probs /= action_probs.sum()
 
-        action = int(np.random.choice(self.n_actions, p=action_probs))
-
+        action = int(np.random.choice(A, p=action_probs))
         return action, qualities, action_probs
 
     def _select_action_multi_step_gpu(
