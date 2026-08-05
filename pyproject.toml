@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SkyalyticAI"
-version = "1.4.5"
+version = "1.5.0"
 description = "Neural Isomorphic Evolutionary Architecture - A brain-inspired AI framework"
 readme = "README.md"
 license = {text = "CC-BY-NC-SA-4.0"}
@@ -32,6 +32,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+]
+corpus = [
+    "opencc-python-reimplemented>=0.1.0",
 ]
 torch = [
     "torch>=2.0.0",

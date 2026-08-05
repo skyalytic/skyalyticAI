@@ -60,8 +60,50 @@ class CorpusManager:
         self._teacher: Optional[TeacherNPC] = None
         # 已用 API 增强过的学段集合（避免重复调用 API 限流）
         self._loaded_stages: set = set()
+        # 学习路径：按 difficulty 加权采样（先易后难）
+        self._learning_path: Dict[str, Dict[str, List[Dict]]] = {}
+        self._stage_difficulty_offset: Dict[str, float] = {}
+        # 文件元数据：path -> (subject, difficulty)
+        self._file_meta: Dict[Path, Tuple[str, float]] = {}
+        # 机制2：文件级别语料 (difficulty, lines) 列表，用于加权采样
+        self._file_lines_by_key: Dict[TrainKey, List[Tuple[float, List[str]]]] = defaultdict(list)
+        # 机制2：考试行集合（按学段），用于采样时排除考试行（避免数据泄露）
+        self._exam_set_by_stage: Dict[str, set] = {}
 
+        self._load_learning_path()
         self._load_all()
+
+    def _load_learning_path(self) -> None:
+        """加载 learning_path.json，构建学段难度偏移表。
+        学段越高级，整体难度偏移越大（sensorimotor=0, kindergarten=1, ... phd=7）。
+        """
+        import json
+        lp_file = self.corpus_root / "learning_path.json"
+        if lp_file.is_file():
+            try:
+                self._learning_path = json.loads(lp_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self._learning_path = {}
+        # 学段难度偏移：sensorimotor=0, kindergarten=1, ..., phd=7
+        for i, stage in enumerate(STAGE_ORDER):
+            self._stage_difficulty_offset[stage] = float(i)
+
+    def _file_difficulty(self, stage: str, subject: str, filename: str) -> float:
+        """查询文件难度。未收录的文件返回学段偏移（默认中等难度）。"""
+        # 反向查找学段目录名
+        stage_dir = None
+        for dir_name, s_key in STAGE_DIR_MAP.items():
+            if s_key == stage:
+                stage_dir = dir_name
+                break
+        if stage_dir and self._learning_path:
+            stage_data = self._learning_path.get(stage_dir, {})
+            subj_data = stage_data.get(subject, [])
+            for item in subj_data:
+                if item.get("file") == filename:
+                    return float(item.get("difficulty", 3))
+        # 未收录：用学段偏移作为默认难度
+        return self._stage_difficulty_offset.get(stage, 3.0) + 2.0
 
     def _load_all(self) -> None:
         all_chars: List[str] = []
@@ -87,13 +129,20 @@ class CorpusManager:
                     continue
                 self._file_count += 1
                 lines = _split_into_lines(text)
-                raw_by_stage[stage_key].extend(lines)
                 all_chars.extend(list(text))
 
                 rel = path.relative_to(entry)
                 if len(rel.parts) >= 2:
                     label = rel.parts[0]
+                    # 记录文件难度
+                    diff = self._file_difficulty(stage_key, label, rel.parts[-1])
+                    self._file_meta[path] = (label, diff)
+                    # 机制2：记录文件级别语料（存所有行，采样时排除考试行）
+                    self._file_lines_by_key[(stage_key, label)].append((diff, lines))
                     key_buckets[(stage_key, label)].extend(lines)
+                    raw_by_stage[stage_key].extend(lines)
+                else:
+                    raw_by_stage[stage_key].extend(lines)
 
         # 无静态语料：启用 NPC 家长/老师动态课程（完全不依赖 data/corpus 文件）
         if not all_chars:
@@ -151,6 +200,11 @@ class CorpusManager:
                     self._keys_by_stage[stage].append(s)
             if self._npc_curriculum and not self._keys_by_stage[stage]:
                 self._keys_by_stage[stage].append("通识")
+
+        # 机制2：预构建考试行集合，用于采样时排除考试行（避免数据泄露）
+        self._exam_set_by_stage = {
+            stage: set(exam) for stage, exam in self._exam_by_stage.items() if exam
+        }
 
     def _load_stage_curriculum(self, stage: str) -> None:
         """升学时按需用 API 增强当前学段语料（懒加载）。
@@ -261,9 +315,41 @@ class CorpusManager:
         w /= w.sum()
         return str(self.rng.choice(keys, p=w))
 
+    def _weighted_file_choice(self, files: List[Tuple[float, List[str]]]) -> Optional[List[str]]:
+        """机制2：按 difficulty 加权选择文件，返回该文件的句子列表。
+        权重 = 1.0 / (difficulty + 1)，低难度文件被选中概率更高。
+        """
+        if not files:
+            return None
+        weights = [1.0 / (diff + 1.0) for diff, _ in files]
+        w = np.array(weights, dtype=np.float64)
+        w /= w.sum()
+        idx = int(self.rng.choice(len(files), p=w))
+        return files[idx][1]
+
     def sample_training_line(self, stage: str, subject: Optional[str] = None) -> str:
-        # 优先从缓存池取（初始化模板 + 升学时 API 增强的语料），
-        # 避免每步训练都调 API 导致限流
+        # 机制2：按 difficulty 加权选择文件，再从文件随机取句（先易后难，句子多样性更好）
+        # 1. 确定要采样的 key
+        files: List[Tuple[float, List[str]]] = []
+        if subject and (stage, subject) in self._file_lines_by_key:
+            files = self._file_lines_by_key[(stage, subject)]
+        elif stage in UNIVERSITY_STAGES or subjects_for_stage(stage):
+            subj = subject or self.sample_subject(stage)
+            if subj and (stage, subj) in self._file_lines_by_key:
+                files = self._file_lines_by_key[(stage, subj)]
+        # 1.1 回退到"通识"（sensorimotor 阶段 subject="说话"，但语料在"通识"目录下）
+        if not files and (stage, "通识") in self._file_lines_by_key:
+            files = self._file_lines_by_key[(stage, "通识")]
+        # 2. 加权选文件 + 随机取句（排除考试行，避免数据泄露）
+        if files:
+            exam_set = self._exam_set_by_stage.get(stage, set())
+            for _ in range(3):  # 最多重试 3 次
+                lines = self._weighted_file_choice(files)
+                if lines:
+                    candidate = str(self.rng.choice(lines))
+                    if candidate not in exam_set:
+                        return candidate
+        # 3. 回退到训练池（NPC 语料或无科目文件）
         if subject and (stage, subject) in self._train_by_key:
             pool = self._train_by_key[(stage, subject)]
             if pool:
