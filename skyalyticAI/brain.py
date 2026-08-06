@@ -1489,18 +1489,20 @@ class NIEABrain:
             padded = np.zeros(self.hd_memory.dim, dtype=np.float64)
             padded[: state_vec.shape[0]] = state_vec
             state_vec = padded
-        results = self.hd_memory.retrieve(state_vec, top_k=1)
-        if not results:
+        # 只检索 exp_ 前缀的状态概念（排除 act_/nexp_/rew_/sur_ 等非状态概念）
+        results = self.hd_memory.retrieve(state_vec, top_k=10)
+        exp_results = [(k, s) for k, s in results if k.startswith("exp_")]
+        if not exp_results:
             return None
-        best_key, best_sim = results[0]
+        best_key, best_sim = exp_results[0]
         # 检索关联动作
         assoc_key = best_key + "__action"
         if assoc_key in self.hd_memory.associative_memory:
             assoc_val = self.hd_memory.retrieve_association(assoc_key)
             if assoc_val is not None and isinstance(assoc_val, tuple):
                 action_name = assoc_val[0]
-                # action_key 格式为 "action_{index}"
-                if action_name.startswith("action_"):
+                # action_key 格式为 "act_{index}"（与 _store_to_memory 一致）
+                if action_name.startswith("act_"):
                     try:
                         return int(action_name.split("_")[1])
                     except (ValueError, IndexError):

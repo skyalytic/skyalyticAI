@@ -320,6 +320,20 @@ class NIEATrainer:
         with open(path, "wb") as f:
             pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
 
+        # 自动清理旧 checkpoint：只保留最新 3 个，防止磁盘占满
+        import glob
+        import re
+        old_files = sorted(
+            glob.glob(os.path.join(self.checkpoint_dir, "checkpoint_ep*.pkl")),
+            key=lambda x: int(re.search(r"ep(\d+)", x).group(1)) if re.search(r"ep(\d+)", x) else 0,
+        )
+        if len(old_files) > 3:
+            for old_file in old_files[:-3]:
+                try:
+                    os.remove(old_file)
+                except OSError:
+                    pass
+
     def _flatten_dict(
         self, d: Dict[str, Any], out: Dict[str, Any], prefix: str
     ) -> None:

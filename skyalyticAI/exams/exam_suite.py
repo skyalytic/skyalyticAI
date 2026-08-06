@@ -44,16 +44,18 @@ class ExamSuite(Environment):
             pass_accuracy=spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5,
             seed=seed,
         )
+        # 考试阈值直接使用配置值，不拔高（原 max(0.45, ...) / max(0.42, ...) 逻辑已废除）
+        _base_acc = spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5
         self._reading = ReadingComprehensionExam(
             corpus, stage, observation_dim,
             n_questions=max(8, spec.exam_questions // 2),
-            pass_accuracy=max(0.45, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.05),
+            pass_accuracy=max(0.0, _base_acc - 0.05),
             seed=seed + 1,
         )
         self._reasoning = MultiStepReasoningExam(
             corpus, stage, observation_dim,
             n_questions=max(6, spec.exam_questions // 3),
-            pass_accuracy=max(0.42, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.07),
+            pass_accuracy=max(0.0, _base_acc - 0.07),
             seed=seed + 2,
         )
         self._active = self._char
@@ -71,16 +73,18 @@ class ExamSuite(Environment):
             pass_accuracy=spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5,
             seed=seed,
         )
+        # 考试阈值直接使用配置值，不拔高
+        _base_acc = spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5
         self._reading = ReadingComprehensionExam(
             self.corpus, stage, self.observation_dim,
             n_questions=max(8, spec.exam_questions // 2),
-            pass_accuracy=max(0.45, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.05),
+            pass_accuracy=max(0.0, _base_acc - 0.05),
             seed=seed + 1,
         )
         self._reasoning = MultiStepReasoningExam(
             self.corpus, stage, self.observation_dim,
             n_questions=max(6, spec.exam_questions // 3),
-            pass_accuracy=max(0.42, (spec.exam_pass_accuracy if spec.exam_pass_accuracy > 0 else 0.5) - 0.07),
+            pass_accuracy=max(0.0, _base_acc - 0.07),
             seed=seed + 2,
         )
 
