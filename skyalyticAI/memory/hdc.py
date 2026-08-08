@@ -382,13 +382,15 @@ class HDCMemory:
         np.ndarray
             The bound key-value vector.
         """
-        if key_name not in self.item_memory:
-            self.add_concept(key_name)
-        if value_name not in self.item_memory:
-            self.add_concept(value_name)
-
-        key_vec = self.item_memory[key_name]
-        value_vec = self.item_memory[value_name]
+        # 用局部变量保存向量，避免 add_concept 触发淘汰导致 KeyError
+        # 理论依据：bind 只需向量本身，不依赖 item_memory 中的存活；
+        # 关联键被淘汰后 retrieve 返回 None（海马体自然遗忘）
+        key_vec = self.item_memory.get(key_name)
+        if key_vec is None:
+            key_vec = self.add_concept(key_name)
+        value_vec = self.item_memory.get(value_name)
+        if value_vec is None:
+            value_vec = self.add_concept(value_name)
 
         bound = self.bind(key_vec, value_vec)
         self.associative_memory[key_name] = bound
