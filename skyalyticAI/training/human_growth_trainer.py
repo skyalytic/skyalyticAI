@@ -55,6 +55,73 @@ class HumanGrowthTrainer(NIEATrainer):
                 out[subj] = float(np.mean(dq))
         return out
 
+    def _get_extra_checkpoint_state(self) -> Dict[str, Any]:
+        """保存 HumanGrowthTrainer 的训练状态（学段、升学、说话历史等）。"""
+        return {
+            "school_stage": self.human_env.school_stage,
+            "steps_in_stage": self.human_env._steps_in_stage,
+            "episodes_since_exam": self.human_env._episodes_since_exam,
+            "promotions": self._promotions,
+            "exams_passed": self._exams_passed,
+            "speech_history": list(self._speech_history),
+            "subject_history": {k: list(v) for k, v in self._subject_history.items()},
+            "asr_cer_hist": list(self._asr_cer_hist),
+            "asr_wer_hist": list(self._asr_wer_hist),
+            "ocr_cer_hist": list(self._ocr_cer_hist),
+            "ocr_wer_hist": list(self._ocr_wer_hist),
+            "best_stage_accuracy": dict(self._report_builder.best_stage_accuracy),
+            "latest_stage_accuracy": dict(self._report_builder.latest_stage_accuracy),
+            "retention_history": self._report_builder.retention_history,
+        }
+
+    def _set_extra_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        """恢复 HumanGrowthTrainer 的训练状态。
+
+        注意：set_stage 会重置 _steps_in_stage/_episodes_since_exam，
+        必须先调 set_stage 再覆盖恢复这两个值。
+        """
+        if not state:
+            return
+        stage = state.get("school_stage", "sensorimotor")
+        # set_stage 重建 exam_suite + 加载语料 + 重置 steps/episodes
+        self.human_env.set_stage(stage)
+        self.brain.set_school_stage(stage)
+        # 覆盖 set_stage 重置的值
+        self.human_env._steps_in_stage = state.get("steps_in_stage", 0)
+        self.human_env._episodes_since_exam = state.get("episodes_since_exam", 0)
+        self._promotions = state.get("promotions", 0)
+        self._exams_passed = state.get("exams_passed", 0)
+
+        self._speech_history = deque(
+            state.get("speech_history", []), maxlen=self._speech_window
+        )
+        subject_hist = state.get("subject_history", {})
+        self._subject_history = {
+            k: deque(v, maxlen=self._speech_window) for k, v in subject_hist.items()
+        }
+        self._asr_cer_hist = deque(
+            state.get("asr_cer_hist", []), maxlen=self._speech_window
+        )
+        self._asr_wer_hist = deque(
+            state.get("asr_wer_hist", []), maxlen=self._speech_window
+        )
+        self._ocr_cer_hist = deque(
+            state.get("ocr_cer_hist", []), maxlen=self._speech_window
+        )
+        self._ocr_wer_hist = deque(
+            state.get("ocr_wer_hist", []), maxlen=self._speech_window
+        )
+
+        self._report_builder.best_stage_accuracy = state.get("best_stage_accuracy", {})
+        self._report_builder.latest_stage_accuracy = state.get(
+            "latest_stage_accuracy", {}
+        )
+        self._report_builder.retention_history = state.get("retention_history", [])
+
+        # 恢复 env 缓存的滚动准确率
+        self.human_env.set_rolling_speech_accuracy(self._rolling_speech_accuracy())
+        self.human_env.set_rolling_subject_accuracy(self._rolling_subject_accuracy())
+
     def _run_episode(self, episode: int) -> Dict[str, Any]:
         import time as _time
 

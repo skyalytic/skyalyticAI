@@ -310,6 +310,7 @@ class NIEATrainer:
             "episode_lengths": self.episode_lengths[-100:],
             "episode_surprises": self.episode_surprises[-100:],
             "training_log": self.training_log[-500:],
+            "extra_state": self._get_extra_checkpoint_state(),
         }
 
         path = os.path.join(
@@ -390,8 +391,17 @@ class NIEATrainer:
         self.episode_lengths = checkpoint.get('episode_lengths', [])
         self.episode_surprises = checkpoint.get('episode_surprises', [])
         self.training_log = checkpoint.get('training_log', [])
+        self._set_extra_checkpoint_state(checkpoint.get("extra_state", {}))
 
         return {"episode": episode, "total_steps": total_steps}
+
+    def _get_extra_checkpoint_state(self) -> Dict[str, Any]:
+        """子类覆写：返回需要保存的额外训练状态。"""
+        return {}
+
+    def _set_extra_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        """子类覆写：从 state 恢复额外训练状态。"""
+        pass
 
     def _reconstruct_brain_state(self, data: Any) -> Optional[Dict[str, Any]]:
         """Reconstruct brain state dict from flattened checkpoint data."""
